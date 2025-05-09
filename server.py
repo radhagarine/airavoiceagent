@@ -40,6 +40,12 @@ async def handle_call(request: Request):
         form_data = await request.form()
         data = dict(form_data)
 
+        # Print the complete request form data
+        print("--- COMPLETE TWILIO REQUEST DATA ---")
+        for key, value in data.items():
+            print(f"{key}: {value}")
+        print("-----------------------------------")
+
         # Extract call ID (required to forward the call later)
         call_sid = data.get("CallSid")
         if not call_sid:
@@ -49,12 +55,22 @@ async def handle_call(request: Request):
         caller_phone = str(data.get("From", "unknown-caller"))
         print(f"Processing call with ID: {call_sid} from {caller_phone}")
 
+        # Extract the called phone number
+        called_phone = str(data.get("To", "unknown-caller"))
+        print(f"Processing call with ID: {call_sid} from {called_phone}")
+
         # Create a Daily room with SIP capabilities
         try:
             room_details = await create_sip_room(request.app.state.session, caller_phone)
         except Exception as e:
             print(f"Error creating Daily room: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to create Daily room: {str(e)}")
+
+        # Print the complete request form data
+        print("--- COMPLETE ROOM DETAILS DATA ---")
+        for key, value in room_details.items():
+            print(f"{key}: {value}")
+        print("-----------------------------------")
 
         # Extract necessary details
         room_url = room_details["room_url"]
@@ -65,8 +81,8 @@ async def handle_call(request: Request):
         if not sip_endpoint:
             raise HTTPException(status_code=500, detail="No SIP endpoint provided by Daily")
 
-        # Start the bot process
-        bot_cmd = f"python bot.py -u {room_url} -t {token} -i {call_sid} -s {sip_endpoint}"
+        # Start the bot process with the caller's phone number
+        bot_cmd = f"python bot.py -u {room_url} -t {token} -i {call_sid} -s {sip_endpoint} -p {caller_phone}"
         try:
             # Use shlex to properly split the command for subprocess
             cmd_parts = shlex.split(bot_cmd)

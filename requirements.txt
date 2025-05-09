@@ -4,3 +4,6 @@ uvicorn
 python-dotenv
 twilio
 python-multipart
+supabase
+lancedb
+sentence-transformers
