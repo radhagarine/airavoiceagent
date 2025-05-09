@@ -57,12 +57,16 @@ class KnowledgeEnhancerProcessor(FrameProcessor):
         self.business_id = business_id
         logger.info(f"Initialized KnowledgeEnhancerProcessor for business {business_id}")
     
-    async def process_frame(self, frame):
+    async def process_frame(self, frame, direction):
         """Process a frame by adding knowledge base context.
         
         Args:
             frame: The frame to process
+            direction: The direction of the frame in the pipeline
         """
+        # Call the parent class's process_frame method first
+        await super().process_frame(frame, direction)
+        
         # Only process text frames with user input
         if isinstance(frame, TextFrame) and hasattr(frame, "text"):
             user_query = frame.text
@@ -85,10 +89,6 @@ class KnowledgeEnhancerProcessor(FrameProcessor):
             else:
                 logger.info("No relevant knowledge base entries found")
                 # No need to modify the frame, just pass it through
-            
-        # Pass the frame to the next processor in the pipeline
-        await self.push_frame(frame)
-
 
 async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str, caller_phone: str) -> None:
     """Run the voice bot with the given parameters.
@@ -143,11 +143,6 @@ async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str, caller_
         elif kb.business_has_knowledge_base(business_id):
             logger.info(f"Business {business_id} has a knowledge base")
             knowledge_integration = True
-        else:
-            logger.warning(f"Business {business_id} has no knowledge base, using generic bot")
-            knowledge_integration = False
-            logger.warning("Knowledge base is not available, using generic bot")
-            knowledge_integration = False
         else:
             logger.info(f"Found business ID: {business_id}")
             # Check if business has a knowledge base
