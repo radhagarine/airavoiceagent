@@ -66,6 +66,10 @@ async def handle_call(request: Request):
             print(f"Error creating Daily room: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to create Daily room: {str(e)}")
 
+        # Log timing after creating Daily room
+        room_time = time.time()
+        print(f"Created Daily room after {room_time - start_time:.2f} seconds")
+
         # Print the complete request form data
         print("--- COMPLETE ROOM DETAILS DATA ---")
         for key, value in room_details.items():
@@ -105,16 +109,23 @@ async def handle_call(request: Request):
         # or use Twilio's built-in music on hold
         # https://www.twilio.com/docs/voice/twiml/play#music-on-hold
         resp = VoiceResponse()
+        resp.pause(length=2)  # 2 second pause
+        resp.say("Please wait while we connect you to our assistant...")
         resp.play(
             url="https://therapeutic-crayon-2467.twil.io/assets/US_ringback_tone.mp3",
-            loop=10,
+            loop=50,
         )
 
+        # Log timing before returning TwiML
+        twiml_time = time.time()
+        print(f"Returning TwiML after {twiml_time - start_time:.2f} seconds")
         return str(resp)
 
     except HTTPException:
+        print(f"HTTP Error after {time.time() - start_time:.2f} seconds: {e}")
         raise
     except Exception as e:
+        print(f"Error after {time.time() - start_time:.2f} seconds: {e}")
         print(f"Unexpected error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 

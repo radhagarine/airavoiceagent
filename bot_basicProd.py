@@ -1,4 +1,4 @@
-"""Knowledge-Enhanced Voice Bot - Fixed Version with Proper Greeting Flow."""
+"""Twilio + Daily voice bot implementation with proper state management - Fixed Version."""
 
 import argparse
 import asyncio
@@ -6,7 +6,6 @@ import os
 import sys
 from enum import Enum
 from typing import Optional
-from dataclasses import dataclass
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -22,16 +21,8 @@ from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.services.daily import DailyParams, DailyTransport
 from pipecat.frames.frames import TextFrame
 
-# Import helpers
+# Import the Supabase helper for business lookup
 from utils.supabase_helper import get_business_by_phone
-
-# Try to import knowledge base - it's optional
-try:
-    from utils.knowledge_base import KnowledgeBase
-    HAS_KNOWLEDGE_BASE = True
-except ImportError:
-    logger.warning("Knowledge base module not available")
-    HAS_KNOWLEDGE_BASE = False
 
 # Setup logging
 load_dotenv()
@@ -45,20 +36,13 @@ twilio_client = Client(os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_T
 class ConversationState(Enum):
     """Represents the current state of the conversation."""
     INITIALIZING = "initializing"
-    GREETING = "greeting" 
+    GREETING = "greeting"
     CHATTING = "chatting"
     ENDING = "ending"
 
 
-@dataclass
-class QueryResponse:
-    """Holds the response from LLM along with the original query for context."""
-    response: str
-    was_enhanced: bool = False
-
-
 class VoiceAssistant:
-    """Enhanced voice assistant with optional knowledge base integration."""
+    """Main voice assistant class that manages conversation state and flow."""
     
     def __init__(self, business_name: str = "Our Business", business_id: Optional[str] = None):
         self.business_name = business_name
@@ -68,91 +52,59 @@ class VoiceAssistant:
         self.call_forwarded = False
         self.conversation_started = False
         
-        # Initialize knowledge base if available
-        self.knowledge_base = None
-        self.has_knowledge = False
-        
-        if HAS_KNOWLEDGE_BASE and business_id:
-            try:
-                self.knowledge_base = KnowledgeBase()
-                if self.knowledge_base.business_has_knowledge_base(business_id):
-                    self.has_knowledge = True
-                    logger.info(f"Knowledge base available for business {business_id}")
-                else:
-                    logger.info(f"No knowledge base found for business {business_id}")
-            except Exception as e:
-                logger.error(f"Error initializing knowledge base: {str(e)}")
-        
-        # Build context with initial greeting
+        # Clean context - no pre-loaded messages
         self.context = [
             {
                 "role": "system",
                 "content": self._build_system_prompt()
-            },
-            {
-                "role": "assistant",
-                "content": f"Hello! I am Aira. Thank you for calling {self.business_name}. How can I help you today?"
             }
         ]
     
     def _build_system_prompt(self) -> str:
         """Build the system prompt for the LLM."""
-        base_prompt = (
+        return (
             f"You are a friendly and helpful phone assistant for {self.business_name}. "
             "You are speaking with a customer who called our phone number. "
             "Your responses will be read aloud, so keep them concise, conversational, and natural. "
-            
-            "You should greet customers when they first call with a warm welcome message. "
-            "Listen to what the customer needs and help them accordingly. "
-            "If they ask questions, answer them clearly and helpfully. "
+            "Do not repeat greetings - the caller has already been greeted when the call started. "
+            "Focus on helping the customer with their questions or needs. "
+            "If you don't know specific information, politely let them know and offer to help in other ways."
         )
-        
-        if self.has_knowledge:
-            base_prompt += (
-                "\n\nYou have access to specific information about our business through context provided with user questions. "
-                "Use this context when available to give accurate, specific answers. "
-                "If the context doesn't contain relevant information, answer based on your general knowledge but acknowledge if you're unsure about specific details. "
-            )
-        else:
-            base_prompt += (
-                "\n\nFocus on helping the customer with their questions or needs. "
-                "If you don't know specific information, politely let them know and offer to help in other ways. "
-            )
-        
-        return base_prompt
     
-    async def handle_first_participant_joined(self, transport, participant_id: str):
+    async def handle_first_participant_joined(self, transport, participant_id: str, task: PipelineTask):
         """Handle when the first participant joins the call."""
         logger.info(f"First participant joined: {participant_id}")
         await transport.capture_participant_transcription(participant_id)
-        self.state = ConversationState.GREETING
+        
+        # Send greeting immediately
+        await self._send_greeting(task)
+        self.state = ConversationState.CHATTING
     
-    async def enhance_query_with_knowledge(self, user_query: str) -> str:
-        """Enhance user query with knowledge base context if available."""
-        if not self.has_knowledge:
-            return user_query
+    async def _send_greeting(self, task: PipelineTask):
+        """Send the greeting message directly to TTS."""
+        if self.has_greeted:
+            return
         
-        try:
-            # Query the knowledge base
-            relevant_chunks = self.knowledge_base.query(self.business_id, user_query, top_k=3)
+        greeting = f"Hello! Thank you for calling {self.business_name}. How can I help you today?"
+        logger.info(f"Sending greeting: {greeting}")
+        
+        # Send directly to TTS (not through LLM)
+        greeting_frame = TextFrame(greeting)
+        await task.queue_frames([greeting_frame])
+        
+        # Add to context for conversation history
+        self.context.append({"role": "assistant", "content": greeting})
+        self.has_greeted = True
+    
+    async def start_conversation(self, context_aggregator, task: PipelineTask):
+        """Start the conversation flow after greeting."""
+        if self.conversation_started:
+            return
             
-            if relevant_chunks:
-                # Create enhanced context
-                context_text = "\n".join(relevant_chunks)
-                enhanced_query = f"""
-Context from our knowledge base:
-{context_text}
-
-User question: {user_query}
-
-Please answer the user's question using the provided context when relevant. If the context doesn't contain relevant information, answer based on your general knowledge about restaurants/businesses.
-"""
-                logger.info(f"Enhanced query with {len(relevant_chunks)} knowledge chunks")
-                return enhanced_query
-        except Exception as e:
-            logger.error(f"Error enhancing query with knowledge: {str(e)}")
-        
-        return user_query
+        logger.info("Starting conversation flow")
+        initial_frame = context_aggregator.user().get_context_frame()
+        await task.queue_frames([initial_frame])
+        self.conversation_started = True
     
     async def handle_dial_in_ready(self, call_id: str, sip_uri: str):
         """Handle when dial-in is ready - forward the call."""
@@ -171,30 +123,6 @@ Please answer the user's question using the provided context when relevant. If t
         except Exception as e:
             logger.error(f"Failed to forward call: {str(e)}")
             raise
-
-
-# Custom context aggregator that intercepts messages for knowledge enhancement
-class KnowledgeEnhancedContext(OpenAILLMContext):
-    """Extends OpenAILLMContext to enhance user messages with knowledge base."""
-    
-    def __init__(self, messages, assistant: VoiceAssistant):
-        super().__init__(messages)
-        self.assistant = assistant
-    
-    async def get_messages_for_llm(self):
-        """Override to enhance the last user message if needed."""
-        messages = await super().get_messages_for_llm()
-        
-        # Enhance the last user message if knowledge base is available
-        if self.assistant.has_knowledge and messages and messages[-1].get("role") == "user":
-            user_query = messages[-1]["content"]
-            enhanced_query = await self.assistant.enhance_query_with_knowledge(user_query)
-            
-            # Replace the last message with enhanced version
-            enhanced_messages = messages[:-1] + [{"role": "user", "content": enhanced_query}]
-            return enhanced_messages
-        
-        return messages
 
 
 async def get_business_info(call_id: str, caller_phone: str) -> tuple[str, Optional[str]]:
@@ -226,7 +154,7 @@ async def get_business_info(call_id: str, caller_phone: str) -> tuple[str, Optio
 
 
 async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str, caller_phone: str) -> None:
-    """Run the voice bot with proper state management and optional knowledge base."""
+    """Run the voice bot with proper state management."""
     logger.info(f"Starting bot with room: {room_url}")
     logger.info(f"SIP endpoint: {sip_uri}")
     logger.info(f"Caller phone: {caller_phone}")
@@ -259,18 +187,11 @@ async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str, caller_
     # Setup LLM service
     llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"))
     
-    # Use knowledge-enhanced context if available
-    if assistant.has_knowledge:
-        context = KnowledgeEnhancedContext(assistant.context, assistant)
-        logger.info("Using knowledge-enhanced context")
-    else:
-        context = OpenAILLMContext(assistant.context)
-        logger.info("Using standard context")
-    
     # Setup context aggregator
+    context = OpenAILLMContext(assistant.context)
     context_aggregator = llm.create_context_aggregator(context)
     
-    # Build the simple pipeline (no custom processors needed)
+    # Build the simple pipeline
     pipeline = Pipeline([
         transport.input(),
         context_aggregator.user(),
@@ -288,55 +209,36 @@ async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str, caller_
         ),
     )
     
-    setup_time = time.time()
-    logger.info(f"Bot setup completed after {setup_time - start_time:.2f} seconds")
     # Event handlers
     @transport.event_handler("on_first_participant_joined")
     async def on_first_participant_joined(transport, participant):
-        await assistant.handle_first_participant_joined(transport, participant["id"])
+        await assistant.handle_first_participant_joined(transport, participant["id"], task)
     
-    setup_time = time.time()
-    logger.info(f"Bot setup completed after {setup_time - start_time:.2f} seconds")
     @transport.event_handler("on_participant_left")
     async def on_participant_left(transport, participant, reason):
         logger.info(f"Participant left: {participant['id']}, reason: {reason}")
         assistant.state = ConversationState.ENDING
         await task.cancel()
     
-    setup_time = time.time()
-    logger.info(f"Bot setup completed after {setup_time - start_time:.2f} seconds")
     @transport.event_handler("on_dialin_ready")
     async def on_dialin_ready(transport, cdata):
         await assistant.handle_dial_in_ready(call_id, sip_uri)
     
-    setup_time = time.time()
-    logger.info(f"Bot setup completed after {setup_time - start_time:.2f} seconds")
     @transport.event_handler("on_dialin_connected")
     async def on_dialin_connected(transport, data):
         logger.info(f"Dial-in connected: {data}")
-        
-        # Start the conversation after dial-in is connected
-        if assistant.state == ConversationState.GREETING and not assistant.has_greeted:
-            # Queue the initial context to trigger greeting
-            logger.info("Queueing context frame to start conversation")
-            await task.queue_frames([context_aggregator.user().get_context_frame()])
-            assistant.has_greeted = True
-            assistant.state = ConversationState.CHATTING
+        # Start conversation after dial-in is connected
+        if assistant.has_greeted and not assistant.conversation_started:
+            await assistant.start_conversation(context_aggregator, task)
     
-    setup_time = time.time()
-    logger.info(f"Bot setup completed after {setup_time - start_time:.2f} seconds")
     @transport.event_handler("on_dialin_stopped")
     async def on_dialin_stopped(transport, data):
         logger.info(f"Dial-in stopped: {data}")
     
-    setup_time = time.time()
-    logger.info(f"Bot setup completed after {setup_time - start_time:.2f} seconds")
     @transport.event_handler("on_dialin_error")
     async def on_dialin_error(transport, data):
         logger.error(f"Dial-in error: {data}")
     
-    setup_time = time.time()
-    logger.info(f"Bot setup completed after {setup_time - start_time:.2f} seconds")
     @transport.event_handler("on_dialin_warning")
     async def on_dialin_warning(transport, data):
         logger.warning(f"Dial-in warning: {data}")

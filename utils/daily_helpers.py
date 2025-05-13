@@ -73,4 +73,7 @@ async def create_sip_room(
         return {"room_url": room.url, "token": token, "sip_endpoint": room.config.sip_endpoint}
     except Exception as e:
         print(f"Error creating room: {e}")
+        # Log the full exception details
+        import traceback
+        traceback.print_exc()
         raise
