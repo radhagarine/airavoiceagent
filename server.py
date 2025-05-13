@@ -3,6 +3,7 @@
 import os
 import shlex
 import subprocess
+import time
 from contextlib import asynccontextmanager
 
 import aiohttp
@@ -30,10 +31,18 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
+# Handle both GET and POST for the /call endpoint
+@app.get("/call", response_class=PlainTextResponse)
+async def handle_call_get(request: Request):
+    """Handle GET request to /call endpoint (for testing)."""
+    return "This endpoint expects a POST request from Twilio. Please configure your Twilio webhook to send POST requests to this URL."
+
+
 @app.post("/call", response_class=PlainTextResponse)
-async def handle_call(request: Request):
+async def handle_call_post(request: Request):
     """Handle incoming Twilio call webhook."""
-    print("Received call webhook from Twilio")
+    start_time = time.time()
+    print(f"Received call webhook from Twilio at {start_time}")
 
     try:
         # Get form data from Twilio webhook
@@ -57,7 +66,7 @@ async def handle_call(request: Request):
 
         # Extract the called phone number
         called_phone = str(data.get("To", "unknown-caller"))
-        print(f"Processing call with ID: {call_sid} from {called_phone}")
+        print(f"Call to: {called_phone}")
 
         # Create a Daily room with SIP capabilities
         try:
@@ -70,11 +79,11 @@ async def handle_call(request: Request):
         room_time = time.time()
         print(f"Created Daily room after {room_time - start_time:.2f} seconds")
 
-        # Print the complete request form data
-        print("--- COMPLETE ROOM DETAILS DATA ---")
+        # Print the complete room details
+        print("--- ROOM DETAILS ---")
         for key, value in room_details.items():
             print(f"{key}: {value}")
-        print("-----------------------------------")
+        print("-------------------")
 
         # Extract necessary details
         room_url = room_details["room_url"]
@@ -105,9 +114,6 @@ async def handle_call(request: Request):
             raise HTTPException(status_code=500, detail=f"Failed to start bot: {str(e)}")
 
         # Generate TwiML response to put the caller on hold with music
-        # You can replace the URL with your own music file
-        # or use Twilio's built-in music on hold
-        # https://www.twilio.com/docs/voice/twiml/play#music-on-hold
         resp = VoiceResponse()
         resp.pause(length=2)  # 2 second pause
         resp.say("Please wait while we connect you to our assistant...")
@@ -121,7 +127,7 @@ async def handle_call(request: Request):
         print(f"Returning TwiML after {twiml_time - start_time:.2f} seconds")
         return str(resp)
 
-    except HTTPException:
+    except HTTPException as e:
         print(f"HTTP Error after {time.time() - start_time:.2f} seconds: {e}")
         raise
     except Exception as e:
@@ -134,6 +140,13 @@ async def handle_call(request: Request):
 async def health_check():
     """Simple health check endpoint."""
     return {"status": "healthy"}
+
+
+# Add a test endpoint to simulate a call (for development only)
+@app.get("/test-call")
+async def test_call():
+    """Test endpoint to simulate a Twilio call (development only)."""
+    return {"message": "This is a test endpoint. The actual /call endpoint expects POST requests from Twilio."}
 
 
 if __name__ == "__main__":

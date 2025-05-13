@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import os
 import sys
+import time
 from enum import Enum
 from typing import Optional
 from dataclasses import dataclass
@@ -227,6 +228,7 @@ async def get_business_info(call_id: str, caller_phone: str) -> tuple[str, Optio
 
 async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str, caller_phone: str) -> None:
     """Run the voice bot with proper state management and optional knowledge base."""
+    start_time = time.time()  # Initialize start_time here
     logger.info(f"Starting bot with room: {room_url}")
     logger.info(f"SIP endpoint: {sip_uri}")
     logger.info(f"Caller phone: {caller_phone}")
