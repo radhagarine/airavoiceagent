@@ -1,0 +1,83 @@
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: voice-bot-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./monitoring/rules.yml:/etc/prometheus/rules.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--web.external-url=http://localhost:9090'
+    restart: unless-stopped
+    networks:
+      - voice-bot-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: voice-bot-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USERNAME=admin
+      - GF_SECURITY_ADMIN_PASSWORD=secure_admin_password_2024
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SECURITY_SECRET_KEY=voice_bot_secret_key_very_long_random_string_2024
+      - GF_SECURITY_DISABLE_GRAVATAR=true
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+    restart: unless-stopped
+    networks:
+      - voice-bot-network
+    depends_on:
+      - prometheus
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: voice-bot-alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+      - alertmanager-data:/alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+      - '--web.external-url=http://localhost:9093'
+    restart: unless-stopped
+    networks:
+      - voice-bot-network
+
+  # Optional: Pushgateway for batch jobs
+  pushgateway:
+    image: prom/pushgateway:latest
+    container_name: voice-bot-pushgateway
+    ports:
+      - "9091:9091"
+    restart: unless-stopped
+    networks:
+      - voice-bot-network
+
+networks:
+  voice-bot-network:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+  alertmanager-data:
+    driver: local

@@ -1,175 +1,127 @@
-"""Helper functions for interacting with Supabase."""
+"""Helper functions for interacting with Supabase - With Simple Monitoring."""
 
 import os
 import logging
 import re
+import time
 from typing import Optional, Dict
 
 from supabase import create_client, Client
 from dotenv import load_dotenv
 
-logger = logging.getLogger(__name__)
+# Import simple monitoring
+from monitoring import monitor_performance, logger, log_context, metrics
+
 load_dotenv()
 
 def get_supabase_client() -> Client:
-    """Get a Supabase client instance.
-    
-    Returns:
-        A configured Supabase client
-    """
+    """Get a Supabase client instance."""
     url = os.getenv("SUPABASE_URL")
     key = os.getenv("SUPABASE_KEY")
     
     if not url or not key:
         raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set in environment variables")
     
-    # Log partial key for debugging
-    logger.info(f"Using Supabase URL: {url}")
-    logger.info(f"Using Supabase Key: {key[:5]}...{key[-5:] if len(key) > 10 else ''}")
-    
-    # Create and return the client
+    logger.info("Creating Supabase client", supabase_url=url)
     return create_client(url, key)
 
 def normalize_phone_number(phone_number: str, strip_country_code: bool = False) -> str:
-    """Normalize a phone number by removing all non-digit characters.
-    
-    Args:
-        phone_number: The phone number to normalize
-        strip_country_code: Whether to strip the leading '1' (US country code)
-        
-    Returns:
-        The normalized phone number with only digits
-    """
-    # Keep only digits
+    """Normalize a phone number by removing all non-digit characters."""
     digits_only = re.sub(r'\D', '', phone_number)
     
-    # Optionally strip country code if it's a US number
     if strip_country_code and digits_only.startswith('1') and len(digits_only) > 10:
-        return digits_only[1:]  # Remove the leading '1'
+        return digits_only[1:]
     
     return digits_only
 
-def get_business_by_phone(phone_number: str) -> Optional[dict]:
-    """Get the business details associated with a phone number.
+@monitor_performance("business_lookup")
+def get_business_by_phone(phone_number: str, call_id: str = None) -> Optional[dict]:
+    """Get the business details associated with a phone number."""
+    start_time = time.time()
+    business_found = False
     
-    Args:
-        phone_number: The phone number to look up
-        
-    Returns:
-        Dictionary with business details if found, None otherwise
-    """
-    try:
-        print(f"DEBUGGER: get_business_by_phone called with: {phone_number}")
-        
-        supabase = get_supabase_client()
-        
-        # Try multiple normalizations
-        normalized_phone = normalize_phone_number(phone_number)
-        normalized_phone_no_country = normalize_phone_number(phone_number, strip_country_code=True)
-        
-        print(f"DEBUGGER: Normalized formats: with country code '{normalized_phone}', without country code '{normalized_phone_no_country}'")
-        logger.info(f"Looking up business for phone: '{phone_number}'")
-        
-        # First try a direct match of the exact phone format
-        # For '+' characters, use Postgres LIKE operator to avoid URL encoding issues
-        if '+' in phone_number:
-            # Need to escape special characters for LIKE
-            like_phone = phone_number.replace('+', '\\+').replace('(', '\\(').replace(')', '\\)')
-            logger.info(f"Phone contains special chars, using LIKE with: '{like_phone}'")
-            # Use ILIKE for case-insensitive matching
-            response = supabase.table("business_v2").select("id,name,phone").ilike("phone", like_phone).execute()
-            if response.data and len(response.data) > 0:
-                business = response.data[0]
-                logger.info(f"Found business with ILIKE: {business}")
-                return business
-                
-            # If that fails, try direct comparison which compares the raw string but will URL-encode
-            logger.info(f"ILIKE failed, trying direct eq match with: '{phone_number}'")
-            response = supabase.table("business_v2").select("id,name,phone").eq("phone", phone_number).execute()
-            if response.data and len(response.data) > 0:
-                business = response.data[0]
-                logger.info(f"Found business with eq: {business}")
-                return business
-        else:
-            # No special characters, use direct equality
-            logger.info(f"Trying exact match with: '{phone_number}'")
-            response = supabase.table("business_v2").select("id,name,phone").eq("phone", phone_number).execute()
-            if response.data and len(response.data) > 0:
-                business = response.data[0]
-                logger.info(f"Found business with exact match: {business}")
-                return business
+    with log_context(call_id=call_id, operation="business_lookup"):
+        try:
+            logger.debug("Starting business lookup", phone=phone_number)
             
-        # Try with other formats
-        formats_to_try = [
-            normalized_phone,  # Digits only with country code (e.g., 18554494055)
-            normalized_phone_no_country,  # Digits only without country code (e.g., 8554494055)
-        ]
-        
-        # If there's a + (e.g., "+18554494055"), also try without it
-        # (we already tried with the + directly above)
-        if phone_number.startswith('+'):
-            formats_to_try.append(phone_number[1:])  # Without + (e.g., 18554494055)
-        
-        # Try equality matches with the other formats
-        for fmt in formats_to_try:
-            logger.info(f"Trying format: '{fmt}'")
-            response = supabase.table("business_v2").select("id,name,phone").eq("phone", fmt).execute()
+            supabase = get_supabase_client()
             
-            if response.data and len(response.data) > 0:
-                business = response.data[0]
-                logger.info(f"Found business with format '{fmt}': {business}")
-                return business
-        
-        # If all else fails, get all records and compare manually
-        logger.info("All Supabase queries failed, retrieving all businesses to compare manually")
-        all_response = supabase.table("business_v2").select("id,name,phone").execute()
-        
-        if all_response.data:
-            logger.info(f"Retrieved {len(all_response.data)} businesses")
+            # Try multiple normalizations
+            normalized_phone = normalize_phone_number(phone_number)
+            normalized_phone_no_country = normalize_phone_number(phone_number, strip_country_code=True)
             
-            for business in all_response.data:
-                db_phone = business.get("phone", "")
-                logger.info(f"Checking business: {business}")
-                
-                # Check exact match
-                if db_phone == phone_number:
-                    logger.info(f"Direct string comparison match: {db_phone} == {phone_number}")
-                    return business
-                
-                # Check normalized versions
-                db_normalized = normalize_phone_number(db_phone)
-                
-                if db_normalized == normalized_phone or db_normalized == normalized_phone_no_country:
-                    logger.info(f"Normalized match: {db_normalized} == {normalized_phone} or {normalized_phone_no_country}")
-                    return business
-                
-                # Check without + if DB phone has it
-                if db_phone.startswith('+') and db_phone[1:] == phone_number:
-                    logger.info(f"Match after removing +: {db_phone[1:]} == {phone_number}")
-                    return business
-                
-                # Check if phone_number without + matches DB phone
-                if phone_number.startswith('+') and phone_number[1:] == db_phone:
-                    logger.info(f"Match after removing + from query: {phone_number[1:]} == {db_phone}")
-                    return business
-        
-        logger.warning(f"No business found for phone number: '{phone_number}' after exhaustive matching")
-        return None
+            # Try different phone formats
+            formats_to_try = [
+                phone_number,
+                normalized_phone,
+                normalized_phone_no_country,
+            ]
             
-    except Exception as e:
-        logger.error(f"Error looking up business by phone number: {str(e)}")
-        return None
+            if phone_number.startswith('+'):
+                formats_to_try.append(phone_number[1:])
+                
+            # Try each format
+            for fmt in formats_to_try:
+                logger.debug("Trying phone format", format=fmt)
+                response = supabase.table("business_v2").select("id,name,phone").eq("phone", fmt).execute()
+                
+                if response.data and len(response.data) > 0:
+                    business = response.data[0]
+                    business_found = True
+                    logger.info("Business found", format_used=fmt, business_data=business)
+                    return business
+            
+            # Try ILIKE for special characters
+            if any(c in phone_number for c in ['+', '(', ')', ' ', '-']):
+                like_phone = phone_number.replace('+', '\\+').replace('(', '\\(').replace(')', '\\)')
+                response = supabase.table("business_v2").select("id,name,phone").ilike("phone", like_phone).execute()
+                if response.data and len(response.data) > 0:
+                    business = response.data[0]
+                    business_found = True
+                    logger.info("Business found with ILIKE", business_data=business)
+                    return business
+            
+            # Manual comparison as last resort
+            all_response = supabase.table("business_v2").select("id,name,phone").execute()
+            
+            if all_response.data:
+                for business in all_response.data:
+                    db_phone = business.get("phone", "")
+                    
+                    if (db_phone == phone_number or
+                        normalize_phone_number(db_phone) == normalized_phone or
+                        normalize_phone_number(db_phone) == normalized_phone_no_country or
+                        (db_phone.startswith('+') and db_phone[1:] == phone_number) or
+                        (phone_number.startswith('+') and phone_number[1:] == db_phone)):
+                        
+                        business_found = True
+                        logger.info("Business found with manual comparison", business_data=business)
+                        return business
+            
+            logger.warning("No business found", phone=phone_number)
+            return None
+                
+        except Exception as e:
+            logger.error("Business lookup failed", phone=phone_number, error=str(e))
+            return None
+        finally:
+            # Record business lookup metrics
+            duration_ms = (time.time() - start_time) * 1000
+            status = "success" if business_found else "not_found"
+            
+            metrics.increment_counter(
+                'business_lookup_total',
+                labels={'status': status}
+            )
+            
+            logger.info("Business lookup completed",
+                       phone=phone_number,
+                       business_found=business_found,
+                       duration_ms=duration_ms)
 
-def get_business_id_by_phone(phone_number: str) -> Optional[str]:
-    """Get the business ID associated with a phone number.
-    
-    Args:
-        phone_number: The phone number to look up
-        
-    Returns:
-        The business ID if found, None otherwise
-    """
-    business = get_business_by_phone(phone_number)
+def get_business_id_by_phone(phone_number: str, call_id: str = None) -> Optional[str]:
+    """Get the business ID associated with a phone number."""
+    business = get_business_by_phone(phone_number, call_id=call_id)
     if business:
         return business.get("id")
     return None

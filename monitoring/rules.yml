@@ -1,0 +1,10 @@
+groups:
+  - name: voice_bot_alerts
+    rules:
+      - alert: VoiceBotDown
+        expr: up{job="voice-bot"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Voice bot service is down"

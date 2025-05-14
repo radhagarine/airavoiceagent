@@ -1,0 +1,26 @@
+apiVersion: 1
+
+# Data sources
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+    jsonData:
+      timeInterval: "5s"
+      httpMethod: "POST"
+
+# Dashboard providers
+providers:
+  - name: 'Voice Bot Dashboards'
+    orgId: 1
+    folder: 'Voice Bot'
+    folderUid: voice_bot_folder
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

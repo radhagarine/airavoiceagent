@@ -1,0 +1,17 @@
+# Create a new working alertmanager config
+cat > monitoring/alertmanager.yml << 'EOF'
+route:
+  receiver: 'default'
+  group_wait: 10s
+  group_interval: 10s
+  repeat_interval: 1h
+
+receivers:
+- name: 'default'
+  email_configs:
+  - to: 'admin@localhost'
+    from: 'alertmanager@localhost'
+    subject: 'Alert'
+    smtp_smarthost: 'localhost:587'
+    body: 'Alert fired'
+EOF
