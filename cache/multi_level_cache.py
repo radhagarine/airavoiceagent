@@ -12,7 +12,7 @@ from cachetools import TTLCache
 from monitoring_system import logger, monitor_performance, log_context
 from .config import CacheConfig
 from .stats import CacheStats
-from .redis_cache import RedisClusterCache
+from .redis_cache import UniversalRedisCache
 from .warmer import CacheWarmer
 
 
@@ -30,7 +30,7 @@ class MultiLevelCache:
         )
         
         # L2 Cache (Redis Cluster)
-        self.l2_cache = RedisClusterCache(config)
+        self.l2_cache = UniversalRedisCache(config)
         self.l2_cache.set_stats(self.stats)
         
         # Cache warming
