@@ -1,4 +1,4 @@
-"""Knowledge-Enhanced Voice Bot - Fixed Version with Proper Greeting Flow."""
+"""Knowledge-Enhanced Voice Bot - Fixed Version with Proper Cache Imports."""
 
 import argparse
 import asyncio
@@ -26,6 +26,14 @@ from pipecat.frames.frames import TextFrame
 # Import helpers
 from utils.supabase_helper import get_business_by_phone
 
+# Import cache utilities
+from cache import (
+    initialize_cache,
+    get_cache_instance,
+    cache_business_lookup,
+    generate_business_key
+)
+
 # Try to import knowledge base - it's optional
 try:
     from utils.knowledge_base import KnowledgeBase
@@ -52,10 +60,12 @@ class ConversationState(Enum):
 
 
 @dataclass
-class QueryResponse:
-    """Holds the response from LLM along with the original query for context."""
-    response: str
-    was_enhanced: bool = False
+class BusinessInfo:
+    """Business information data class."""
+    id: Optional[str]
+    name: str
+    phone: str
+    cache_key: str
 
 
 class VoiceAssistant:
@@ -219,6 +229,7 @@ async def get_business_info(call_id: str, caller_phone: str) -> tuple[str, Optio
         logger.error(f"Error in business lookup: {str(e)}")
         return "Our Business", None
 
+
 @cache_business_lookup()
 async def get_business_info_cached(call_id: str, twilio_number: str) -> Optional[BusinessInfo]:
     """Get business information with caching."""
@@ -259,6 +270,7 @@ async def get_business_info_cached(call_id: str, twilio_number: str) -> Optional
             phone=twilio_number,
             cache_key=generate_business_key(twilio_number)
         )
+
 
 async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str, caller_phone: str) -> None:
     """Run the voice bot with cache integration."""

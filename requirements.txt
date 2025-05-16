@@ -13,6 +13,6 @@ prometheus-client>=0.17.0
 structlog>=23.1.0
 psutil>=5.9.0
 
-# Cache dependencies - using redis-py instead of aioredis for Python 3.12 compatibility
-redis>=4.5.0
+# Cache dependencies - using redis-py async support for Python 3.12 compatibility
+redis[hiredis]>=4.5.0
 cachetools>=5.0.0
