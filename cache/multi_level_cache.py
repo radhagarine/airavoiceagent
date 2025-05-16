@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from cachetools import TTLCache
 
-from monitoring import logger, monitor_performance, log_context
+from monitoring_system import logger, monitor_performance, log_context
 from .config import CacheConfig
 from .stats import CacheStats
 from .redis_cache import RedisClusterCache

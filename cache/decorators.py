@@ -5,7 +5,7 @@ import hashlib
 from functools import wraps
 from typing import Callable, Optional, List, Any, Dict
 
-from monitoring import logger
+from monitoring_system import logger
 
 
 def cache_result(ttl: Optional[int] = None, 
@@ -237,7 +237,7 @@ def cache_performance_monitor(operation_name: str):
         @wraps(func)
         async def async_wrapper(*args, **kwargs):
             import time
-            from monitoring import metrics
+            from monitoring_system import metrics
             
             start_time = time.time()
             success = False
@@ -267,7 +267,7 @@ def cache_performance_monitor(operation_name: str):
         @wraps(func)
         def sync_wrapper(*args, **kwargs):
             import time
-            from monitoring import metrics
+            from monitoring_system import metrics
             
             start_time = time.time()
             success = False

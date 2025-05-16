@@ -5,7 +5,7 @@ import time
 from typing import Dict, Any, List
 from collections import defaultdict
 
-from monitoring import logger, metrics
+from monitoring_system import logger, metrics
 
 
 class CacheStats:

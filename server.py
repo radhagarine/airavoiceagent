@@ -19,14 +19,18 @@ from utils.daily_helpers import create_sip_room
 load_dotenv()
 
 # Import monitoring and cache
-from monitoring import (
+from monitoring_system import (
     initialize_monitoring,
+    initialize_memory_leak_detection,
     monitor_performance,
     logger,
     log_context,
     metrics,
     add_metrics_endpoint,
-    update_system_metrics
+    update_system_metrics,
+    get_memory_report,
+    shutdown_monitoring,
+    track_object_creation
 )
 from cache import (
     initialize_cache,
@@ -44,6 +48,10 @@ async def lifespan(app: FastAPI):
     # Create aiohttp session
     app.state.session = aiohttp.ClientSession()
     logger.info("Server starting up")
+
+    # Initialize monitoring
+    initialize_monitoring()
+    initialize_memory_leak_detection(enabled=os.getenv("MEMORY_LEAK_DETECTION", "true").lower() == "true")
     
     # Initialize cache system
     logger.info("Initializing cache system")
@@ -65,6 +73,8 @@ async def lifespan(app: FastAPI):
     
     # Cleanup
     await app.state.session.close()
+    await shutdown_monitoring()  # This now handles both regular monitoring and memory leak detection
+    logger.info("Server shutdown complete")
     
     # Shutdown cache system
     logger.info("Shutting down cache system")
@@ -263,6 +273,44 @@ async def test_cache():
             "cache_operational": False,
             "error": str(e)
         }
+
+# Add memory endpoints
+@app.get("/memory/report")
+async def memory_report():
+    """Get detailed memory usage report."""
+    return get_memory_report()
+
+@app.get("/memory/snapshot")
+async def memory_snapshot():
+    """Get current memory snapshot with leak detection."""
+    if not os.getenv("ENVIRONMENT") == "development":
+        raise HTTPException(status_code=403, detail="Memory snapshots only available in development")
+    
+    import tracemalloc
+    import gc
+    
+    # Force garbage collection
+    gc.collect()
+    
+    # Get tracemalloc snapshot
+    if tracemalloc.is_tracing():
+        snapshot = tracemalloc.take_snapshot()
+        top_stats = snapshot.statistics('traceback')
+        
+        return {
+            "memory_usage_mb": psutil.Process().memory_info().rss / 1024 / 1024,
+            "top_allocations": [
+                {
+                    "size_mb": stat.size / 1024 / 1024,
+                    "count": stat.count,
+                    "traceback": stat.traceback.format()
+                }
+                for stat in top_stats[:10]
+            ],
+            "gc_stats": gc.get_stats()
+        }
+    else:
+        return {"error": "tracemalloc not enabled"}
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))

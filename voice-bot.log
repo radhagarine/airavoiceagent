@@ -1,16 +1,16 @@
-2025-05-15 17:48:29.124 | INFO     | pipecat:<module>:13 - ᓚᘏᗢ Pipecat 0.0.67 ᓚᘏᗢ
+2025-05-15 18:38:09.385 | INFO     | pipecat:<module>:13 - ᓚᘏᗢ Pipecat 0.0.67 ᓚᘏᗢ
 INFO:     Will watch for changes in these directories: ['/Users/radhagarine/Documents/BuildSchool/AiRa/dev/dailyco/pipecat/examples/phone-chatbot-daily-twilio-sip']
 INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-INFO:     Started reloader process [22852] using StatReload
-2025-05-15 17:48:29.523 | INFO     | pipecat:<module>:13 - ᓚᘏᗢ Pipecat 0.0.67 ᓚᘏᗢ
-INFO:     Started server process [22856]
+INFO:     Started reloader process [30586] using StatReload
+2025-05-15 18:38:09.756 | INFO     | pipecat:<module>:13 - ᓚᘏᗢ Pipecat 0.0.67 ᓚᘏᗢ
+INFO:     Started server process [30589]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
-INFO:     127.0.0.1:61758 - "GET /health HTTP/1.1" 200 OK
-INFO:     127.0.0.1:61760 - "GET /health HTTP/1.1" 200 OK
-INFO:     127.0.0.1:61762 - "GET /cache/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63217 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63219 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63221 - "GET /cache/health HTTP/1.1" 200 OK
 INFO:     Shutting down
 INFO:     Waiting for application shutdown.
 INFO:     Application shutdown complete.
-INFO:     Finished server process [22856]
-INFO:     Stopping reloader process [22852]
+INFO:     Finished server process [30589]
+INFO:     Stopping reloader process [30586]

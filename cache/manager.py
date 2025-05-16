@@ -3,7 +3,7 @@
 import asyncio
 from typing import Optional
 
-from monitoring import logger
+from monitoring_system import logger
 from .config import CacheConfig
 from .multi_level_cache import MultiLevelCache
 

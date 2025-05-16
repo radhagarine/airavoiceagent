@@ -10,7 +10,7 @@ from supabase import create_client, Client
 from dotenv import load_dotenv
 
 # Import simple monitoring
-from monitoring import monitor_performance, logger, log_context, metrics
+from monitoring_system import monitor_performance, logger, log_context, metrics
 
 load_dotenv()
 

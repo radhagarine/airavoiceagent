@@ -5,7 +5,7 @@ import time
 from typing import List, Tuple, Callable, Dict, Any, Optional
 from concurrent.futures import ThreadPoolExecutor
 
-from monitoring import logger
+from monitoring_system import logger
 from .config import CacheConfig
 
 

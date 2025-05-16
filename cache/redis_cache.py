@@ -13,7 +13,7 @@ import logging
 import redis
 import redis.asyncio as redis_async
 
-from monitoring import logger, monitor_performance
+from monitoring_system import logger, monitor_performance
 from .config import CacheConfig
 from .stats import CacheStats
 from .circuit_breaker import CircuitBreaker

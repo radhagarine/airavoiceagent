@@ -5,7 +5,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import Literal
 
-from monitoring import logger
+from monitoring_system import logger
 
 
 class CircuitBreaker:
