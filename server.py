@@ -1,5 +1,4 @@
-
-"""Webhook server with cache integration and monitoring."""
+"""Complete server.py implementation with agent integration."""
 
 import os
 import shlex
@@ -40,6 +39,9 @@ from cache import (
     warm_business_lookups
 )
 
+# Import agent system
+from agents import initialize_agent_system, shutdown_agent_system, get_agent_system
+
 # Initialize monitoring
 initialize_monitoring()
 
@@ -69,12 +71,27 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to initialize cache: {str(e)}")
         logger.warning("Continuing without cache")
     
+    # Initialize agent system
+    logger.info("Initializing agent system")
+    try:
+        await initialize_agent_system()
+        logger.info("Agent system initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize agent system: {str(e)}")
+        logger.warning("Continuing without agent system")
+    
     yield
     
     # Cleanup
     await app.state.session.close()
-    await shutdown_monitoring()  # This now handles both regular monitoring and memory leak detection
-    logger.info("Server shutdown complete")
+    
+    # Shutdown agent system
+    logger.info("Shutting down agent system")
+    try:
+        await shutdown_agent_system()
+        logger.info("Agent system shutdown complete")
+    except Exception as e:
+        logger.error(f"Error shutting down agent system: {str(e)}")
     
     # Shutdown cache system
     logger.info("Shutting down cache system")
@@ -84,10 +101,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Error shutting down cache: {str(e)}")
     
+    # Shutdown monitoring
+    await shutdown_monitoring()
     await metrics.shutdown()
     logger.info("Server shutdown complete")
 
-app = FastAPI(lifespan=lifespan, title="Voice Bot Webhook Server", version="1.0.0")
+app = FastAPI(lifespan=lifespan, title="Voice Bot Webhook Server with Agent Integration", version="1.0.0")
 
 # Add metrics endpoint
 add_metrics_endpoint(app)
@@ -100,7 +119,7 @@ async def handle_call_get(request: Request):
 @monitor_performance("twilio_webhook")
 @app.post("/call", response_class=PlainTextResponse)
 async def handle_call_post(request: Request):
-    """Handle incoming Twilio call webhook with cache integration."""
+    """Handle incoming Twilio call webhook with cache and agent integration."""
     start_time = time.time()
     correlation_id = f"twilio_{int(time.time() * 1000)}"
     
@@ -145,7 +164,7 @@ async def handle_call_post(request: Request):
                 if not sip_endpoint:
                     raise HTTPException(status_code=500, detail="No SIP endpoint provided by Daily")
 
-                # Start bot process with cache integration
+                # Start bot process with cache and agent integration
                 bot_cmd = f"python bot.py -u {room_url} -t {token} -i {call_sid} -s {sip_endpoint} -p {caller_phone}"
                 try:
                     cmd_parts = shlex.split(bot_cmd)
@@ -179,16 +198,22 @@ async def handle_call_post(request: Request):
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint with cache status."""
+    """Health check endpoint with cache and agent status."""
     # Update system metrics
     await update_system_metrics()
     
     # Get cache health
     cache_health = await get_cache_health()
     
+    # Get agent system health
+    agent_system = get_agent_system()
+    agent_health = await agent_system.health_check() if agent_system else {"status": "not_initialized"}
+    
     # Overall health determination
     overall_health = "healthy"
     if cache_health.get("status") != "healthy":
+        overall_health = "degraded"
+    if agent_health.get("status") not in ["healthy", "not_initialized"]:
         overall_health = "degraded"
     
     return {
@@ -199,9 +224,11 @@ async def health_check():
             "structured_logging": True
         },
         "cache": cache_health,
+        "agents": agent_health,
         "components": {
             "cache": cache_health.get("status", "unknown"),
             "redis_l2": cache_health.get("l2_cache", {}).get("status", "unknown"),
+            "agents": agent_health.get("status", "unknown"),
             "monitoring": "healthy"
         }
     }
@@ -229,6 +256,53 @@ async def warm_cache_endpoint(phones: list[str]):
     except Exception as e:
         logger.error("Cache warming failed", error=str(e))
         raise HTTPException(status_code=500, detail=f"Cache warming failed: {str(e)}")
+
+# Agent system endpoints
+@app.get("/agents/health")
+async def agent_health_check():
+    """Get agent system health status."""
+    agent_system = get_agent_system()
+    if not agent_system:
+        return {
+            "status": "not_initialized",
+            "error": "Agent system not initialized"
+        }
+    
+    return await agent_system.health_check()
+
+@app.get("/agents/stats")
+async def agent_statistics():
+    """Get agent system statistics."""
+    agent_system = get_agent_system()
+    if not agent_system:
+        return {
+            "error": "Agent system not initialized"
+        }
+    
+    registry_stats = agent_system.registry.get_registry_stats()
+    factory_stats = agent_system.factory.get_factory_stats()
+    
+    return {
+        "registry": registry_stats,
+        "factory": factory_stats,
+        "system": {
+            "initialized": agent_system.is_initialized,
+            "registered_types": len(agent_system.registry),
+            "cached_agents": len(agent_system.factory._agent_cache)
+        }
+    }
+
+@app.get("/agents/types")
+async def list_agent_types():
+    """List all registered agent types."""
+    agent_system = get_agent_system()
+    if not agent_system:
+        return {"error": "Agent system not initialized"}
+    
+    return {
+        "registered_types": agent_system.registry.get_registered_types(),
+        "default_type": agent_system.registry._default_agent_type
+    }
 
 @app.get("/test-call")
 async def test_call():
@@ -274,6 +348,52 @@ async def test_cache():
             "error": str(e)
         }
 
+# Development endpoint for testing agents
+@app.get("/dev/agent-test")
+async def test_agent():
+    """Development endpoint to test agent functionality."""
+    if not os.getenv("ENVIRONMENT") == "development":
+        raise HTTPException(status_code=403, detail="This endpoint is only available in development")
+    
+    try:
+        agent_system = get_agent_system()
+        if not agent_system:
+            return {"error": "Agent system not initialized"}
+        
+        # Test each agent type
+        test_results = {}
+        for business_type in ["restaurant", "retail", "service", "default"]:
+            try:
+                agent = agent_system.get_agent_for_business(business_type)
+                health = await agent.health_check()
+                stats = agent.get_stats()
+                
+                test_results[business_type] = {
+                    "agent_id": agent.agent_id,
+                    "health": health,
+                    "stats": stats
+                }
+            except Exception as e:
+                test_results[business_type] = {
+                    "error": str(e)
+                }
+        
+        return {
+            "agent_system_operational": True,
+            "test_results": test_results,
+            "summary": {
+                "total_types_tested": len(test_results),
+                "successful_tests": len([r for r in test_results.values() if "error" not in r]),
+                "failed_tests": len([r for r in test_results.values() if "error" in r])
+            }
+        }
+    except Exception as e:
+        logger.error("Agent test failed", error=str(e))
+        return {
+            "agent_system_operational": False,
+            "error": str(e)
+        }
+
 # Add memory endpoints
 @app.get("/memory/report")
 async def memory_report():
@@ -288,6 +408,7 @@ async def memory_snapshot():
     
     import tracemalloc
     import gc
+    import psutil
     
     # Force garbage collection
     gc.collect()
@@ -314,5 +435,5 @@ async def memory_snapshot():
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
-    logger.info("Starting server with cache integration", port=port)
+    logger.info("Starting server with cache and agent integration", port=port)
     uvicorn.run("server:app", host="0.0.0.0", port=port, reload=True)

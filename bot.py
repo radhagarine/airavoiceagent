@@ -1,4 +1,4 @@
-"""Knowledge-Enhanced Voice Bot - Fixed Version with Proper Cache Imports."""
+"""Knowledge-Enhanced Voice Bot with Agent Integration - Complete Implementation."""
 
 import argparse
 import asyncio
@@ -23,7 +23,7 @@ from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.services.daily import DailyParams, DailyTransport
 from pipecat.frames.frames import TextFrame
 
-# Import helpers
+# Import the Supabase helper for business lookup
 from utils.supabase_helper import get_business_by_phone
 
 # Import cache utilities
@@ -33,6 +33,17 @@ from cache import (
     cache_business_lookup,
     generate_business_key
 )
+
+# Import agent system
+from agents import (
+    BaseAgent,
+    AgentFactory,
+    AgentLifecycle,
+    initialize_agent_system,
+    get_agent_for_business_type
+)
+from agents.base.agent import AgentContext
+from agents.integration.context import create_agent_enhanced_context
 
 # Try to import knowledge base - it's optional
 try:
@@ -61,10 +72,11 @@ class ConversationState(Enum):
 
 @dataclass
 class BusinessInfo:
-    """Business information data class."""
+    """Enhanced business information data class."""
     id: Optional[str]
     name: str
     phone: str
+    type: str  # business type (restaurant, retail, service)
     cache_key: str
 
 
@@ -101,7 +113,7 @@ class VoiceAssistant:
                 "content": self._build_system_prompt()
             },
             {
-                "role": "assistant",
+                "role": "assistant", 
                 "content": f"Hello! I am Aira. Thank you for calling {self.business_name}. How can I help you today?"
             }
         ]
@@ -138,33 +150,6 @@ class VoiceAssistant:
         await transport.capture_participant_transcription(participant_id)
         self.state = ConversationState.GREETING
     
-    async def enhance_query_with_knowledge(self, user_query: str) -> str:
-        """Enhance user query with knowledge base context if available."""
-        if not self.has_knowledge:
-            return user_query
-        
-        try:
-            # Query the knowledge base
-            relevant_chunks = self.knowledge_base.query(self.business_id, user_query, top_k=3)
-            
-            if relevant_chunks:
-                # Create enhanced context
-                context_text = "\n".join(relevant_chunks)
-                enhanced_query = f"""
-Context from our knowledge base:
-{context_text}
-
-User question: {user_query}
-
-Please answer the user's question using the provided context when relevant. If the context doesn't contain relevant information, answer based on your general knowledge about restaurants/businesses.
-"""
-                logger.info(f"Enhanced query with {len(relevant_chunks)} knowledge chunks")
-                return enhanced_query
-        except Exception as e:
-            logger.error(f"Error enhancing query with knowledge: {str(e)}")
-        
-        return user_query
-    
     async def handle_dial_in_ready(self, call_id: str, sip_uri: str):
         """Handle when dial-in is ready - forward the call."""
         if self.call_forwarded:
@@ -184,31 +169,7 @@ Please answer the user's question using the provided context when relevant. If t
             raise
 
 
-# Custom context aggregator that intercepts messages for knowledge enhancement
-class KnowledgeEnhancedContext(OpenAILLMContext):
-    """Extends OpenAILLMContext to enhance user messages with knowledge base."""
-    
-    def __init__(self, messages, assistant: VoiceAssistant):
-        super().__init__(messages)
-        self.assistant = assistant
-    
-    async def get_messages_for_llm(self):
-        """Override to enhance the last user message if needed."""
-        messages = await super().get_messages_for_llm()
-        
-        # Enhance the last user message if knowledge base is available
-        if self.assistant.has_knowledge and messages and messages[-1].get("role") == "user":
-            user_query = messages[-1]["content"]
-            enhanced_query = await self.assistant.enhance_query_with_knowledge(user_query)
-            
-            # Replace the last message with enhanced version
-            enhanced_messages = messages[:-1] + [{"role": "user", "content": enhanced_query}]
-            return enhanced_messages
-        
-        return messages
-
-
-async def get_business_info(call_id: str, caller_phone: str) -> tuple[str, Optional[str]]:
+async def get_business_info(call_id: str, caller_phone: str) -> tuple[str, str, Optional[str]]:
     """Get business information from Twilio number with caching."""
     try:
         # Get call details from Twilio
@@ -220,14 +181,14 @@ async def get_business_info(call_id: str, caller_phone: str) -> tuple[str, Optio
         business_info = await get_business_info_cached(call_id, twilio_number)
         
         if business_info:
-            return business_info.name, business_info.id
+            return business_info.name, business_info.type, business_info.id
         else:
             logger.warning(f"No business found for number {twilio_number}")
-            return "Our Business", None
+            return "Our Business", "default", None
             
     except Exception as e:
         logger.error(f"Error in business lookup: {str(e)}")
-        return "Our Business", None
+        return "Our Business", "default", None
 
 
 @cache_business_lookup()
@@ -249,9 +210,10 @@ async def get_business_info_cached(call_id: str, twilio_number: str) -> Optional
                 id=business.get("id"),
                 name=business.get("name", "Our Business"),
                 phone=business.get("phone"),
+                type=business.get("type", "default"),  # Get business type
                 cache_key=generate_business_key(twilio_number)
             )
-            logger.info(f"Found business: {business_info.name} (ID: {business_info.id})")
+            logger.info(f"Found business: {business_info.name} (ID: {business_info.id}, Type: {business_info.type})")
             return business_info
         else:
             logger.warning(f"No business found for number {twilio_number}")
@@ -259,6 +221,7 @@ async def get_business_info_cached(call_id: str, twilio_number: str) -> Optional
                 id=None,
                 name="Our Business",
                 phone=twilio_number,
+                type="default",
                 cache_key=generate_business_key(twilio_number)
             )
             
@@ -266,14 +229,15 @@ async def get_business_info_cached(call_id: str, twilio_number: str) -> Optional
         logger.error(f"Error in cached business lookup: {str(e)}")
         return BusinessInfo(
             id=None,
-            name="Our Business",
+            name="Our Business", 
             phone=twilio_number,
+            type="default",
             cache_key=generate_business_key(twilio_number)
         )
 
 
 async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str, caller_phone: str) -> None:
-    """Run the voice bot with cache integration."""
+    """Run the voice bot with agent integration."""
     start_time = time.time()
     logger.info(f"Starting bot with room: {room_url}")
     logger.info(f"SIP endpoint: {sip_uri}")
@@ -286,8 +250,24 @@ async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str, caller_
         await initialize_cache()
         cache = get_cache_instance()
     
-    # Get business information with caching
-    business_name, business_id = await get_business_info(call_id, caller_phone)
+    # Initialize agent system if not already done
+    await initialize_agent_system()
+    
+    # Get business information with caching (now includes business type)
+    business_name, business_type, business_id = await get_business_info(call_id, caller_phone)
+    
+    # Get appropriate agent for business type
+    business_agent = get_agent_for_business_type(business_type)
+    logger.info(f"Selected agent for business type '{business_type}': {business_agent.agent_id}")
+    
+    # Create agent context
+    agent_context = AgentContext(
+        business_id=business_id or "unknown",
+        business_name=business_name,
+        business_type=business_type,
+        call_id=call_id,
+        conversation_state={}
+    )
     
     # Create the voice assistant
     assistant = VoiceAssistant(business_name, business_id)
@@ -314,18 +294,29 @@ async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str, caller_
     # Setup LLM service
     llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"))
     
-    # Use knowledge-enhanced context if available
-    if assistant.has_knowledge:
-        context = KnowledgeEnhancedContext(assistant.context, assistant)
-        logger.info("Using knowledge-enhanced context with cache")
+    # Create agent-enhanced context instead of knowledge-enhanced context
+    if HAS_KNOWLEDGE_BASE and business_id:
+        try:
+            knowledge_base = KnowledgeBase()
+            logger.info("Using agent-enhanced context with knowledge base")
+        except Exception as e:
+            logger.error(f"Error initializing knowledge base: {str(e)}")
+            knowledge_base = None
     else:
-        context = OpenAILLMContext(assistant.context)
-        logger.info("Using standard context")
+        knowledge_base = None
     
-    # Setup context aggregator
+    # Create agent-enhanced context (this is the key integration point)
+    context = create_agent_enhanced_context(
+        assistant.context,
+        business_agent,
+        agent_context,
+        knowledge_base
+    )
+    
+    # Setup context aggregator with agent-enhanced context
     context_aggregator = llm.create_context_aggregator(context)
     
-    # Build the simple pipeline
+    # Build the simple pipeline (no changes to pipeline structure)
     pipeline = Pipeline([
         transport.input(),
         context_aggregator.user(),
@@ -345,6 +336,7 @@ async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str, caller_
     
     setup_time = time.time()
     logger.info(f"Bot setup completed after {setup_time - start_time:.2f} seconds")
+    logger.info(f"Using {business_agent.agent_id} for {business_name}")
     
     # Event handlers
     @transport.event_handler("on_first_participant_joined")
@@ -392,7 +384,7 @@ async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str, caller_
     except Exception as e:
         logger.error(f"Error running bot pipeline: {str(e)}")
     finally:
-        # Log final statistics
+        # Log final statistics including agent stats
         total_time = time.time() - start_time
         logger.info(f"Bot session completed after {total_time:.2f} seconds")
         
@@ -400,6 +392,10 @@ async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str, caller_
         if cache:
             stats = cache.get_stats()
             logger.info("Cache statistics for this session", **stats.get("performance", {}))
+        
+        # Log agent statistics
+        agent_stats = business_agent.get_stats()
+        logger.info("Agent statistics for this session", **agent_stats)
 
 
 async def main():
