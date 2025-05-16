@@ -1,4 +1,5 @@
-"""Webhook server with simple monitoring."""
+
+"""Webhook server with cache integration and monitoring."""
 
 import os
 import shlex
@@ -17,7 +18,7 @@ from utils.daily_helpers import create_sip_room
 # Load environment variables
 load_dotenv()
 
-# Import simple monitoring
+# Import monitoring and cache
 from monitoring import (
     initialize_monitoring,
     monitor_performance,
@@ -26,6 +27,13 @@ from monitoring import (
     metrics,
     add_metrics_endpoint,
     update_system_metrics
+)
+from cache import (
+    initialize_cache,
+    shutdown_cache,
+    get_cache_health,
+    get_cache_stats,
+    warm_business_lookups
 )
 
 # Initialize monitoring
@@ -37,14 +45,39 @@ async def lifespan(app: FastAPI):
     app.state.session = aiohttp.ClientSession()
     logger.info("Server starting up")
     
+    # Initialize cache system
+    logger.info("Initializing cache system")
+    try:
+        await initialize_cache()
+        logger.info("Cache system initialized successfully")
+        
+        # Warm cache with common business lookups if available
+        # You can customize this based on your most frequently called numbers
+        common_phones = []  # Add your most common business phones here
+        if common_phones:
+            await warm_business_lookups(common_phones)
+            logger.info(f"Cache warmed with {len(common_phones)} business lookups")
+    except Exception as e:
+        logger.error(f"Failed to initialize cache: {str(e)}")
+        logger.warning("Continuing without cache")
+    
     yield
     
     # Cleanup
     await app.state.session.close()
+    
+    # Shutdown cache system
+    logger.info("Shutting down cache system")
+    try:
+        await shutdown_cache()
+        logger.info("Cache system shutdown complete")
+    except Exception as e:
+        logger.error(f"Error shutting down cache: {str(e)}")
+    
     await metrics.shutdown()
     logger.info("Server shutdown complete")
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(lifespan=lifespan, title="Voice Bot Webhook Server", version="1.0.0")
 
 # Add metrics endpoint
 add_metrics_endpoint(app)
@@ -57,7 +90,7 @@ async def handle_call_get(request: Request):
 @monitor_performance("twilio_webhook")
 @app.post("/call", response_class=PlainTextResponse)
 async def handle_call_post(request: Request):
-    """Handle incoming Twilio call webhook."""
+    """Handle incoming Twilio call webhook with cache integration."""
     start_time = time.time()
     correlation_id = f"twilio_{int(time.time() * 1000)}"
     
@@ -102,7 +135,7 @@ async def handle_call_post(request: Request):
                 if not sip_endpoint:
                     raise HTTPException(status_code=500, detail="No SIP endpoint provided by Daily")
 
-                # Start bot process
+                # Start bot process with cache integration
                 bot_cmd = f"python bot.py -u {room_url} -t {token} -i {call_sid} -s {sip_endpoint} -p {caller_phone}"
                 try:
                     cmd_parts = shlex.split(bot_cmd)
@@ -136,24 +169,102 @@ async def handle_call_post(request: Request):
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
+    """Health check endpoint with cache status."""
     # Update system metrics
     await update_system_metrics()
     
+    # Get cache health
+    cache_health = await get_cache_health()
+    
+    # Overall health determination
+    overall_health = "healthy"
+    if cache_health.get("status") != "healthy":
+        overall_health = "degraded"
+    
     return {
-        "status": "healthy",
+        "status": overall_health,
+        "timestamp": time.time(),
         "monitoring": {
             "metrics_enabled": metrics.enabled,
             "structured_logging": True
+        },
+        "cache": cache_health,
+        "components": {
+            "cache": cache_health.get("status", "unknown"),
+            "redis_l2": cache_health.get("l2_cache", {}).get("status", "unknown"),
+            "monitoring": "healthy"
         }
     }
+
+@app.get("/cache/stats")
+async def cache_statistics():
+    """Get cache statistics endpoint."""
+    return get_cache_stats()
+
+@app.get("/cache/health")
+async def cache_health_check():
+    """Dedicated cache health check endpoint."""
+    return await get_cache_health()
+
+@app.post("/cache/warm")
+async def warm_cache_endpoint(phones: list[str]):
+    """Manually trigger cache warming for business lookups."""
+    try:
+        await warm_business_lookups(phones)
+        return {
+            "status": "success",
+            "message": f"Cache warming initiated for {len(phones)} phone numbers",
+            "phones": phones
+        }
+    except Exception as e:
+        logger.error("Cache warming failed", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Cache warming failed: {str(e)}")
 
 @app.get("/test-call")
 async def test_call():
     """Test endpoint."""
     return {"message": "This is a test endpoint. The actual /call endpoint expects POST requests from Twilio."}
 
+# Development endpoint for testing cache
+@app.get("/dev/cache-test")
+async def test_cache():
+    """Development endpoint to test cache functionality."""
+    if not os.getenv("ENVIRONMENT") == "development":
+        raise HTTPException(status_code=403, detail="This endpoint is only available in development")
+    
+    try:
+        from cache import get_cache_instance
+        cache = get_cache_instance()
+        
+        if not cache:
+            return {"error": "Cache not initialized"}
+        
+        # Test basic cache operations
+        test_key = "test_key"
+        test_value = {"test": "data", "timestamp": time.time()}
+        
+        # Set a value
+        await cache.set(test_key, test_value)
+        
+        # Get the value
+        retrieved = await cache.get(test_key)
+        
+        # Get stats
+        stats = cache.get_stats()
+        
+        return {
+            "cache_operational": True,
+            "test_set_get": retrieved == test_value,
+            "stats": stats
+        }
+    except Exception as e:
+        logger.error("Cache test failed", error=str(e))
+        return {
+            "cache_operational": False,
+            "error": str(e)
+        }
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
-    logger.info("Starting server", port=port)
+    logger.info("Starting server with cache integration", port=port)
     uvicorn.run("server:app", host="0.0.0.0", port=port, reload=True)

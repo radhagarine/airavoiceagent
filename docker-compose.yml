@@ -1,4 +1,61 @@
 services:
+  # Redis Cluster for caching
+  redis-1:
+    image: redis:7-alpine
+    container_name: voice-bot-redis-1
+    command: redis-server --port 7001 --cluster-enabled yes --cluster-config-file nodes-1.conf --cluster-node-timeout 5000 --appendonly yes
+    ports:
+      - "7001:7001"
+    volumes:
+      - redis-1-data:/data
+    networks:
+      - voice-bot-network
+    restart: unless-stopped
+
+  redis-2:
+    image: redis:7-alpine
+    container_name: voice-bot-redis-2
+    command: redis-server --port 7002 --cluster-enabled yes --cluster-config-file nodes-2.conf --cluster-node-timeout 5000 --appendonly yes
+    ports:
+      - "7002:7002"
+    volumes:
+      - redis-2-data:/data
+    networks:
+      - voice-bot-network
+    restart: unless-stopped
+
+  redis-3:
+    image: redis:7-alpine
+    container_name: voice-bot-redis-3
+    command: redis-server --port 7003 --cluster-enabled yes --cluster-config-file nodes-3.conf --cluster-node-timeout 5000 --appendonly yes
+    ports:
+      - "7003:7003"
+    volumes:
+      - redis-3-data:/data
+    networks:
+      - voice-bot-network
+    restart: unless-stopped
+
+  # Redis Cluster Initialization (runs once)
+  redis-cluster-init:
+    image: redis:7-alpine
+    container_name: voice-bot-redis-init
+    command: >
+      sh -c "
+        sleep 10 &&
+        redis-cli --cluster create 
+        redis-1:7001 redis-2:7002 redis-3:7003 
+        --cluster-replicas 0 --cluster-yes
+        || echo 'Cluster already initialized'
+      "
+    depends_on:
+      - redis-1
+      - redis-2
+      - redis-3
+    networks:
+      - voice-bot-network
+    restart: "no"
+
   prometheus:
     image: prom/prometheus:latest
     container_name: voice-bot-prometheus
@@ -80,4 +137,10 @@ volumes:
   grafana-data:
     driver: local
   alertmanager-data:
+    driver: local
+  redis-1-data:
+    driver: local
+  redis-2-data:
+    driver: local
+  redis-3-data:
     driver: local

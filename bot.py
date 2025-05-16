@@ -199,41 +199,82 @@ class KnowledgeEnhancedContext(OpenAILLMContext):
 
 
 async def get_business_info(call_id: str, caller_phone: str) -> tuple[str, Optional[str]]:
-    """Get business information from Twilio number and Supabase lookup."""
+    """Get business information from Twilio number with caching."""
     try:
         # Get call details from Twilio
         call_details = twilio_client.calls(call_id).fetch()
         twilio_number = call_details.to
         logger.info(f"Call was made to Twilio number: {twilio_number}")
         
-        # Look up the business for this Twilio number
-        business = get_business_by_phone(twilio_number)
+        # Use cached business lookup
+        business_info = await get_business_info_cached(call_id, twilio_number)
         
-        if not business and call_details.to_formatted:
-            # Try with formatted number
-            business = get_business_by_phone(call_details.to_formatted)
-        
-        if business:
-            business_name = business.get("name", "Our Business")
-            business_id = business.get("id")
-            logger.info(f"Found business: {business_name} (ID: {business_id})")
-            return business_name, business_id
+        if business_info:
+            return business_info.name, business_info.id
         else:
             logger.warning(f"No business found for number {twilio_number}")
             return "Our Business", None
+            
     except Exception as e:
         logger.error(f"Error in business lookup: {str(e)}")
         return "Our Business", None
 
+@cache_business_lookup()
+async def get_business_info_cached(call_id: str, twilio_number: str) -> Optional[BusinessInfo]:
+    """Get business information with caching."""
+    try:
+        # Get call details from Twilio
+        call_details = twilio_client.calls(call_id).fetch()
+        
+        # Look up the business for this Twilio number
+        business = get_business_by_phone(twilio_number, call_id=call_id)
+        
+        if not business and call_details.to_formatted:
+            # Try with formatted number
+            business = get_business_by_phone(call_details.to_formatted, call_id=call_id)
+        
+        if business:
+            business_info = BusinessInfo(
+                id=business.get("id"),
+                name=business.get("name", "Our Business"),
+                phone=business.get("phone"),
+                cache_key=generate_business_key(twilio_number)
+            )
+            logger.info(f"Found business: {business_info.name} (ID: {business_info.id})")
+            return business_info
+        else:
+            logger.warning(f"No business found for number {twilio_number}")
+            return BusinessInfo(
+                id=None,
+                name="Our Business",
+                phone=twilio_number,
+                cache_key=generate_business_key(twilio_number)
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in cached business lookup: {str(e)}")
+        return BusinessInfo(
+            id=None,
+            name="Our Business",
+            phone=twilio_number,
+            cache_key=generate_business_key(twilio_number)
+        )
 
 async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str, caller_phone: str) -> None:
-    """Run the voice bot with proper state management and optional knowledge base."""
-    start_time = time.time()  # Initialize start_time here
+    """Run the voice bot with cache integration."""
+    start_time = time.time()
     logger.info(f"Starting bot with room: {room_url}")
     logger.info(f"SIP endpoint: {sip_uri}")
     logger.info(f"Caller phone: {caller_phone}")
     
-    # Get business information
+    # Initialize cache if not already done
+    cache = get_cache_instance()
+    if not cache:
+        logger.info("Initializing cache system")
+        await initialize_cache()
+        cache = get_cache_instance()
+    
+    # Get business information with caching
     business_name, business_id = await get_business_info(call_id, caller_phone)
     
     # Create the voice assistant
@@ -264,7 +305,7 @@ async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str, caller_
     # Use knowledge-enhanced context if available
     if assistant.has_knowledge:
         context = KnowledgeEnhancedContext(assistant.context, assistant)
-        logger.info("Using knowledge-enhanced context")
+        logger.info("Using knowledge-enhanced context with cache")
     else:
         context = OpenAILLMContext(assistant.context)
         logger.info("Using standard context")
@@ -272,7 +313,7 @@ async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str, caller_
     # Setup context aggregator
     context_aggregator = llm.create_context_aggregator(context)
     
-    # Build the simple pipeline (no custom processors needed)
+    # Build the simple pipeline
     pipeline = Pipeline([
         transport.input(),
         context_aggregator.user(),
@@ -292,27 +333,22 @@ async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str, caller_
     
     setup_time = time.time()
     logger.info(f"Bot setup completed after {setup_time - start_time:.2f} seconds")
+    
     # Event handlers
     @transport.event_handler("on_first_participant_joined")
     async def on_first_participant_joined(transport, participant):
         await assistant.handle_first_participant_joined(transport, participant["id"])
     
-    setup_time = time.time()
-    logger.info(f"Bot setup completed after {setup_time - start_time:.2f} seconds")
     @transport.event_handler("on_participant_left")
     async def on_participant_left(transport, participant, reason):
         logger.info(f"Participant left: {participant['id']}, reason: {reason}")
         assistant.state = ConversationState.ENDING
         await task.cancel()
     
-    setup_time = time.time()
-    logger.info(f"Bot setup completed after {setup_time - start_time:.2f} seconds")
     @transport.event_handler("on_dialin_ready")
     async def on_dialin_ready(transport, cdata):
         await assistant.handle_dial_in_ready(call_id, sip_uri)
     
-    setup_time = time.time()
-    logger.info(f"Bot setup completed after {setup_time - start_time:.2f} seconds")
     @transport.event_handler("on_dialin_connected")
     async def on_dialin_connected(transport, data):
         logger.info(f"Dial-in connected: {data}")
@@ -325,27 +361,33 @@ async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str, caller_
             assistant.has_greeted = True
             assistant.state = ConversationState.CHATTING
     
-    setup_time = time.time()
-    logger.info(f"Bot setup completed after {setup_time - start_time:.2f} seconds")
     @transport.event_handler("on_dialin_stopped")
     async def on_dialin_stopped(transport, data):
         logger.info(f"Dial-in stopped: {data}")
     
-    setup_time = time.time()
-    logger.info(f"Bot setup completed after {setup_time - start_time:.2f} seconds")
     @transport.event_handler("on_dialin_error")
     async def on_dialin_error(transport, data):
         logger.error(f"Dial-in error: {data}")
     
-    setup_time = time.time()
-    logger.info(f"Bot setup completed after {setup_time - start_time:.2f} seconds")
     @transport.event_handler("on_dialin_warning")
     async def on_dialin_warning(transport, data):
         logger.warning(f"Dial-in warning: {data}")
     
-    # Run the pipeline
-    runner = PipelineRunner()
-    await runner.run(task)
+    try:
+        # Run the pipeline
+        runner = PipelineRunner()
+        await runner.run(task)
+    except Exception as e:
+        logger.error(f"Error running bot pipeline: {str(e)}")
+    finally:
+        # Log final statistics
+        total_time = time.time() - start_time
+        logger.info(f"Bot session completed after {total_time:.2f} seconds")
+        
+        # Log cache statistics if available
+        if cache:
+            stats = cache.get_stats()
+            logger.info("Cache statistics for this session", **stats.get("performance", {}))
 
 
 async def main():
