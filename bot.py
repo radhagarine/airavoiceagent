@@ -1,15 +1,22 @@
-"""Updated bot.py with simplified business info retrieval flow.
-This version has a cleaner flow from business phone to info.
+"""
+Voice bot implementation with business-specific agent integration.
+
+This module contains the core bot implementation that:
+1. Handles Twilio phone calls via Daily SIP
+2. Identifies the business using the called phone number
+3. Uses the appropriate agent type based on business type
+4. Integrates with knowledge base for contextual responses
+
+Main entry point is the run_bot function, which takes call details and sets up
+the conversation pipeline with the right business context.
 """
 
 import argparse
 import asyncio
 import os
 import sys
-import time
 from enum import Enum
-from typing import Optional
-from dataclasses import dataclass
+from typing import Optional, Dict, Any, Tuple
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -22,32 +29,32 @@ from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.services.daily import DailyParams, DailyTransport
-from pipecat.frames.frames import TextFrame
 
-# Import the Twilio handler with simplified interface
-from utils.twilio_handler import forward_call, get_client_for_phone, get_business_name
-
-# Import the Supabase helper for business lookup
+# Import business and Twilio utilities
+from utils.twilio_handler import forward_call, get_business_name
 from utils.supabase_helper import get_business_by_phone
 
-# Import cache utilities
-from cache import (
-    initialize_cache,
-    get_cache_instance,
-    cache_business_lookup,
-    generate_business_key
-)
+# Import cache and agent system (with conditional imports to handle missing components)
+try:
+    from cache import initialize_cache, get_cache_instance, cache_business_lookup, generate_business_key
+    HAS_CACHE = True
+except ImportError:
+    logger.warning("Cache system not available")
+    HAS_CACHE = False
+    # Create dummy cache decorator to avoid errors when cache is not available
+    def cache_business_lookup(): 
+        def decorator(func): return func
+        return decorator
+    def generate_business_key(phone): return phone
 
-# Import agent system
-from agents import (
-    BaseAgent,
-    AgentFactory,
-    AgentLifecycle,
-    initialize_agent_system,
-    get_agent_for_business_type
-)
-from agents.base.agent import AgentContext
-from agents.integration.context import create_agent_enhanced_context
+try:
+    from agents import initialize_agent_system, get_agent_for_business_type
+    from agents.base.agent import AgentContext
+    from agents.integration.context import create_agent_enhanced_context
+    HAS_AGENTS = True
+except ImportError:
+    logger.warning("Agent system not available")
+    HAS_AGENTS = False
 
 # Try to import knowledge base - it's optional
 try:
@@ -60,7 +67,7 @@ except ImportError:
 # Setup logging
 load_dotenv()
 logger.remove(0)
-logger.add(sys.stderr, level="DEBUG")
+logger.add(sys.stderr, level=os.getenv("LOG_LEVEL", "INFO"))
 
 
 class ConversationState(Enum):
@@ -71,22 +78,30 @@ class ConversationState(Enum):
     ENDING = "ending"
 
 
-@dataclass
 class BusinessInfo:
-    """Enhanced business information data class."""
-    id: Optional[str]
-    name: str
-    phone: str
-    type: str  # business type (restaurant, retail, service)
-    cache_key: str
+    """Business information data structure."""
+    
+    def __init__(self, id: Optional[str], name: str, phone: str, business_type: str = "default"):
+        self.id = id
+        self.name = name  
+        self.phone = phone
+        self.type = business_type
+        self.cache_key = generate_business_key(phone) if HAS_CACHE else phone
 
 
 class VoiceAssistant:
-    """Enhanced voice assistant with optional knowledge base integration."""
+    """Core voice assistant that manages the conversation flow."""
     
-    def __init__(self, business_name: str = "Our Business", business_id: Optional[str] = None):
-        self.business_name = business_name
-        self.business_id = business_id
+    def __init__(self, business_info: BusinessInfo, call_id: str):
+        """
+        Initialize the voice assistant.
+        
+        Args:
+            business_info: Information about the business
+            call_id: Twilio call ID
+        """
+        self.business_info = business_info
+        self.call_id = call_id
         self.state = ConversationState.INITIALIZING
         self.has_greeted = False
         self.call_forwarded = False
@@ -96,14 +111,14 @@ class VoiceAssistant:
         self.knowledge_base = None
         self.has_knowledge = False
         
-        if HAS_KNOWLEDGE_BASE and business_id:
+        if HAS_KNOWLEDGE_BASE and business_info.id:
             try:
                 self.knowledge_base = KnowledgeBase()
-                if self.knowledge_base.business_has_knowledge_base(business_id):
+                if self.knowledge_base.business_has_knowledge_base(business_info.id):
                     self.has_knowledge = True
-                    logger.info(f"Knowledge base available for business {business_id}")
+                    logger.info(f"Knowledge base available for business {business_info.id}")
                 else:
-                    logger.info(f"No knowledge base found for business {business_id}")
+                    logger.info(f"No knowledge base found for business {business_info.id}")
             except Exception as e:
                 logger.error(f"Error initializing knowledge base: {str(e)}")
         
@@ -115,14 +130,14 @@ class VoiceAssistant:
             },
             {
                 "role": "assistant", 
-                "content": f"Hello! I am Aira. Thank you for calling {self.business_name}. How can I help you today?"
+                "content": f"Hello! I am Aira. Thank you for calling {business_info.name}. How can I help you today?"
             }
         ]
     
     def _build_system_prompt(self) -> str:
         """Build the system prompt for the LLM."""
         base_prompt = (
-            f"You are a friendly and helpful phone assistant for {self.business_name}. "
+            f"You are a friendly and helpful phone assistant for {self.business_info.name}. "
             "You are speaking with a customer who called our phone number. "
             "Your responses will be read aloud, so keep them concise, conversational, and natural. "
             
@@ -151,25 +166,24 @@ class VoiceAssistant:
         await transport.capture_participant_transcription(participant_id)
         self.state = ConversationState.GREETING
     
-    async def handle_dial_in_ready(self, call_id: str, sip_uri: str, business_phone: Optional[str] = None):
+    async def handle_dial_in_ready(self, call_id: str, sip_uri: str):
         """
-        Handle when dial-in is ready - forward the call using the appropriate Twilio account.
+        Handle when dial-in is ready - forward the call.
         
         Args:
             call_id: Twilio call SID
             sip_uri: Daily SIP URI to forward to
-            business_phone: The business phone number that was called
         """
         if self.call_forwarded:
-            logger.warning("Call already forwarded, ignoring")
+            logger.warning("Call already forwarded, ignoring duplicate event")
             return
         
         logger.info(f"Forwarding call {call_id} to {sip_uri}")
-        logger.info(f"Business phone: {business_phone if business_phone else 'Not specified'}")
+        logger.info(f"Business phone: {self.business_info.phone}")
         
         try:
             # Forward call using appropriate client based on business phone
-            success = forward_call(call_id, sip_uri, business_phone)
+            success = forward_call(call_id, sip_uri, self.business_info.phone)
             
             if success:
                 logger.info("Call forwarded successfully")
@@ -186,7 +200,7 @@ class VoiceAssistant:
 @cache_business_lookup()
 async def get_business_info_cached(call_id: str, business_phone: str) -> Optional[BusinessInfo]:
     """
-    Get business information with caching.
+    Get business information with caching if available.
     
     Args:
         call_id: Twilio call SID
@@ -208,21 +222,20 @@ async def get_business_info_cached(call_id: str, business_phone: str) -> Optiona
                 id=business.get("id"),
                 name=business.get("name", "Our Business"),
                 phone=business.get("phone"),
-                type=business.get("type", "default"),
-                cache_key=generate_business_key(business_phone)
+                business_type=business.get("type", "default")
             )
             logger.info(f"Found business in database: {business_info.name} (ID: {business_info.id}, Type: {business_info.type})")
             return business_info
-        else:
-            logger.info(f"No business found in database for phone {business_phone}")
-            return None
+            
+        logger.info(f"No business found in database for phone {business_phone}")
+        return None
             
     except Exception as e:
         logger.error(f"Error in cached business lookup: {str(e)}")
         return None
 
 
-async def get_business_info(business_phone: str, call_id: str) -> tuple[str, str, Optional[str]]:
+async def get_business_info(business_phone: str, call_id: str) -> BusinessInfo:
     """
     Get business information using a simple flow:
     1. Try to get from database via cache
@@ -234,30 +247,39 @@ async def get_business_info(business_phone: str, call_id: str) -> tuple[str, str
         call_id: Twilio call SID (for logging)
         
     Returns:
-        (business_name, business_type, business_id) tuple
+        BusinessInfo object with available details
     """
     if not business_phone:
         logger.warning(f"No business phone provided for call {call_id}")
-        return "Our Business", "default", None
+        return BusinessInfo(None, "Our Business", "unknown", "default")
         
     try:
-        # First try to get from database
-        business_info = await get_business_info_cached(call_id, business_phone)
-        
-        if business_info:
-            # Found in database - use this info
-            return business_info.name, business_info.type, business_info.id
+        # First try to get from database (with caching if available)
+        if HAS_CACHE:
+            business_info = await get_business_info_cached(call_id, business_phone)
+            if business_info:
+                return business_info
+        else:
+            # Try direct database lookup if cache not available
+            business = get_business_by_phone(business_phone, call_id=call_id)
+            if business:
+                return BusinessInfo(
+                    id=business.get("id"),
+                    name=business.get("name", "Our Business"),
+                    phone=business.get("phone"),
+                    business_type=business.get("type", "default")
+                )
         
         # Not in database - try to get name from Twilio config
         business_name = get_business_name(business_phone)
         logger.info(f"Using business name from config: {business_name}")
         
         # Return with default type
-        return business_name, "default", None
+        return BusinessInfo(None, business_name, business_phone, "default")
             
     except Exception as e:
         logger.error(f"Error in business lookup: {str(e)}")
-        return "Our Business", "default", None
+        return BusinessInfo(None, "Our Business", business_phone, "default")
 
 
 async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str, 
@@ -273,40 +295,42 @@ async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str,
         caller_phone: Phone number of the caller
         business_phone: Phone number of the business that was called
     """
-    start_time = time.time()
-    logger.info(f"Starting bot with room: {room_url}")
-    logger.info(f"SIP endpoint: {sip_uri}")
-    logger.info(f"Caller phone: {caller_phone}")
-    logger.info(f"Business phone: {business_phone}")
+    logger.info(f"Starting bot for call {call_id}")
+    logger.info(f"Room: {room_url} | SIP endpoint: {sip_uri}")
+    logger.info(f"Caller: {caller_phone} | Business: {business_phone}")
     
-    # Initialize cache if not already done
-    cache = get_cache_instance()
-    if not cache:
+    # Initialize cache if available
+    if HAS_CACHE:
         logger.info("Initializing cache system")
         await initialize_cache()
-        cache = get_cache_instance()
     
-    # Initialize agent system if not already done
-    await initialize_agent_system()
+    # Initialize agent system if available
+    if HAS_AGENTS:
+        logger.info("Initializing agent system")
+        await initialize_agent_system()
     
-    # Get business information using simplified flow
-    business_name, business_type, business_id = await get_business_info(business_phone, call_id)
+    # Get business information
+    business_info = await get_business_info(business_phone, call_id)
     
-    # Get appropriate agent for business type
-    business_agent = get_agent_for_business_type(business_type)
-    logger.info(f"Selected agent for business type '{business_type}': {business_agent.agent_id}")
-    
-    # Create agent context
-    agent_context = AgentContext(
-        business_id=business_id or "unknown",
-        business_name=business_name,
-        business_type=business_type,
-        call_id=call_id,
-        conversation_state={}
-    )
+    # Create agent context if agents are available
+    agent_context = None
+    business_agent = None
+    if HAS_AGENTS:
+        # Get appropriate agent for business type
+        business_agent = get_agent_for_business_type(business_info.type)
+        logger.info(f"Selected agent for business type '{business_info.type}': {business_agent.agent_id}")
+        
+        # Create agent context
+        agent_context = AgentContext(
+            business_id=business_info.id or "unknown",
+            business_name=business_info.name,
+            business_type=business_info.type,
+            call_id=call_id,
+            conversation_state={}
+        )
     
     # Create the voice assistant
-    assistant = VoiceAssistant(business_name, business_id)
+    assistant = VoiceAssistant(business_info, call_id)
     
     # Setup Daily transport
     transport = DailyTransport(
@@ -324,30 +348,41 @@ async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str,
     # Setup TTS service
     tts = CartesiaTTSService(
         api_key=os.getenv("CARTESIA_API_KEY"),
-        voice_id="71a7ad14-091c-4e8e-a314-022ece01c121",  # British Reading Lady
+        voice_id=os.getenv("CARTESIA_VOICE_ID", "71a7ad14-091c-4e8e-a314-022ece01c121"),  # British Reading Lady
     )
     
     # Setup LLM service
     llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"))
     
-    # Create agent-enhanced context
-    if HAS_KNOWLEDGE_BASE and business_id:
+    # Initialize knowledge base if available
+    knowledge_base = None
+    if HAS_KNOWLEDGE_BASE and business_info.id:
         try:
             knowledge_base = KnowledgeBase()
-            logger.info("Using agent-enhanced context with knowledge base")
+            if knowledge_base.business_has_knowledge_base(business_info.id):
+                logger.info("Knowledge base available for this business")
+            else:
+                knowledge_base = None
+                logger.info("No knowledge base found for this business")
         except Exception as e:
             logger.error(f"Error initializing knowledge base: {str(e)}")
-            knowledge_base = None
-    else:
-        knowledge_base = None
     
-    # Create context aggregator with agent-enhanced context
-    context = create_agent_enhanced_context(
-        assistant.context,
-        business_agent,
-        agent_context,
-        knowledge_base
-    )
+    # Create context aggregator with agent enhancement if available
+    if HAS_AGENTS and business_agent and agent_context:
+        # Use agent-enhanced context
+        context = create_agent_enhanced_context(
+            assistant.context,
+            business_agent,
+            agent_context,
+            knowledge_base
+        )
+        logger.info("Using agent-enhanced context")
+    else:
+        # Use standard context
+        context = OpenAILLMContext(assistant.context)
+        logger.info("Using standard context (agent system not available)")
+    
+    # Create context aggregator
     context_aggregator = llm.create_context_aggregator(context)
     
     # Build the pipeline
@@ -368,9 +403,6 @@ async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str,
         ),
     )
     
-    setup_time = time.time()
-    logger.info(f"Bot setup completed after {setup_time - start_time:.2f} seconds")
-    
     # Event handlers
     @transport.event_handler("on_first_participant_joined")
     async def on_first_participant_joined(transport, participant):
@@ -384,8 +416,7 @@ async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str,
     
     @transport.event_handler("on_dialin_ready")
     async def on_dialin_ready(transport, cdata):
-        # Pass the business_phone to the handler
-        await assistant.handle_dial_in_ready(call_id, sip_uri, business_phone)
+        await assistant.handle_dial_in_ready(call_id, sip_uri)
     
     @transport.event_handler("on_dialin_connected")
     async def on_dialin_connected(transport, data):
@@ -413,14 +444,13 @@ async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str,
     
     try:
         # Run the pipeline
+        logger.info("Starting conversation pipeline")
         runner = PipelineRunner()
         await runner.run(task)
     except Exception as e:
         logger.error(f"Error running bot pipeline: {str(e)}")
     finally:
-        # Log final statistics
-        total_time = time.time() - start_time
-        logger.info(f"Bot session completed after {total_time:.2f} seconds")
+        logger.info(f"Bot session for call {call_id} completed")
 
 
 async def main():
