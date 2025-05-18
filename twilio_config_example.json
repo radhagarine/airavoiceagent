@@ -1,0 +1,19 @@
+{
+    "accounts": {
+      "cloud_telephone_account_sid1": {
+        "auth_token": "auth_token_1",
+        "name": "business_name_1",
+        "phone_numbers": [
+          "+14344343333"
+        ]
+      },
+      "cloud_telephone_account_sid2": {
+        "auth_token": "auth_token_1",
+        "name": "business_name_2",
+        "phone_numbers": [
+          "+14344343332"
+        ]
+      }
+      
+    }
+  }

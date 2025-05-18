@@ -1,5 +1,16 @@
-2025-05-16 12:25:16.881 | INFO     | pipecat:<module>:13 - ᓚᘏᗢ Pipecat 0.0.67 ᓚᘏᗢ
-Traceback (most recent call last):
-  File "/Users/radhagarine/Documents/BuildSchool/AiRa/dev/dailyco/pipecat/examples/phone-chatbot-daily-twilio-sip/server.py", line 43, in <module>
-    from agents import initialize_agent_system, shutdown_agent_system, get_agent_system
-ImportError: cannot import name 'initialize_agent_system' from 'agents' (/Users/radhagarine/Documents/BuildSchool/AiRa/dev/dailyco/pipecat/examples/phone-chatbot-daily-twilio-sip/agents/__init__.py)
+2025-05-17 12:48:31.213 | INFO     | pipecat:<module>:13 - ᓚᘏᗢ Pipecat 0.0.67 ᓚᘏᗢ
+INFO:     Will watch for changes in these directories: ['/Users/radhagarine/Documents/BuildSchool/AiRa/dev/dailyco/pipecat/examples/phone-chatbot-daily-twilio-sip']
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [24107] using StatReload
+2025-05-17 12:48:31.613 | INFO     | pipecat:<module>:13 - ᓚᘏᗢ Pipecat 0.0.67 ᓚᘏᗢ
+INFO:     Started server process [24110]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     127.0.0.1:54354 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54356 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54358 - "GET /cache/health HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [24110]
+INFO:     Stopping reloader process [24107]

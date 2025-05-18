@@ -1,4 +1,6 @@
-"""Knowledge-Enhanced Voice Bot with Agent Integration - Complete Implementation."""
+"""Updated bot.py with simplified business info retrieval flow.
+This version has a cleaner flow from business phone to info.
+"""
 
 import argparse
 import asyncio
@@ -11,7 +13,6 @@ from dataclasses import dataclass
 
 from dotenv import load_dotenv
 from loguru import logger
-from twilio.rest import Client
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.pipeline.pipeline import Pipeline
@@ -22,6 +23,9 @@ from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.services.daily import DailyParams, DailyTransport
 from pipecat.frames.frames import TextFrame
+
+# Import the Twilio handler with simplified interface
+from utils.twilio_handler import forward_call, get_client_for_phone, get_business_name
 
 # Import the Supabase helper for business lookup
 from utils.supabase_helper import get_business_by_phone
@@ -57,9 +61,6 @@ except ImportError:
 load_dotenv()
 logger.remove(0)
 logger.add(sys.stderr, level="DEBUG")
-
-# Initialize Twilio client
-twilio_client = Client(os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
 
 
 class ConversationState(Enum):
@@ -150,98 +151,133 @@ class VoiceAssistant:
         await transport.capture_participant_transcription(participant_id)
         self.state = ConversationState.GREETING
     
-    async def handle_dial_in_ready(self, call_id: str, sip_uri: str):
-        """Handle when dial-in is ready - forward the call."""
+    async def handle_dial_in_ready(self, call_id: str, sip_uri: str, business_phone: Optional[str] = None):
+        """
+        Handle when dial-in is ready - forward the call using the appropriate Twilio account.
+        
+        Args:
+            call_id: Twilio call SID
+            sip_uri: Daily SIP URI to forward to
+            business_phone: The business phone number that was called
+        """
         if self.call_forwarded:
             logger.warning("Call already forwarded, ignoring")
             return
         
         logger.info(f"Forwarding call {call_id} to {sip_uri}")
+        logger.info(f"Business phone: {business_phone if business_phone else 'Not specified'}")
         
         try:
-            twilio_client.calls(call_id).update(
-                twiml=f"<Response><Dial><Sip>{sip_uri}</Sip></Dial></Response>"
-            )
-            logger.info("Call forwarded successfully")
-            self.call_forwarded = True
+            # Forward call using appropriate client based on business phone
+            success = forward_call(call_id, sip_uri, business_phone)
+            
+            if success:
+                logger.info("Call forwarded successfully")
+                self.call_forwarded = True
+            else:
+                logger.error("Failed to forward call - no suitable Twilio account found")
+                raise RuntimeError("Failed to forward call - no suitable Twilio account found")
+                
         except Exception as e:
             logger.error(f"Failed to forward call: {str(e)}")
             raise
 
 
-async def get_business_info(call_id: str, caller_phone: str) -> tuple[str, str, Optional[str]]:
-    """Get business information from Twilio number with caching."""
-    try:
-        # Get call details from Twilio
-        call_details = twilio_client.calls(call_id).fetch()
-        twilio_number = call_details.to
-        logger.info(f"Call was made to Twilio number: {twilio_number}")
-        
-        # Use cached business lookup
-        business_info = await get_business_info_cached(call_id, twilio_number)
-        
-        if business_info:
-            return business_info.name, business_info.type, business_info.id
-        else:
-            logger.warning(f"No business found for number {twilio_number}")
-            return "Our Business", "default", None
-            
-    except Exception as e:
-        logger.error(f"Error in business lookup: {str(e)}")
-        return "Our Business", "default", None
-
-
 @cache_business_lookup()
-async def get_business_info_cached(call_id: str, twilio_number: str) -> Optional[BusinessInfo]:
-    """Get business information with caching."""
+async def get_business_info_cached(call_id: str, business_phone: str) -> Optional[BusinessInfo]:
+    """
+    Get business information with caching.
+    
+    Args:
+        call_id: Twilio call SID
+        business_phone: Phone number of the business
+        
+    Returns:
+        BusinessInfo object or None if not found
+    """
+    if not business_phone:
+        logger.warning("Empty business phone provided to get_business_info_cached")
+        return None
+        
     try:
-        # Get call details from Twilio
-        call_details = twilio_client.calls(call_id).fetch()
-        
-        # Look up the business for this Twilio number
-        business = get_business_by_phone(twilio_number, call_id=call_id)
-        
-        if not business and call_details.to_formatted:
-            # Try with formatted number
-            business = get_business_by_phone(call_details.to_formatted, call_id=call_id)
+        # Lookup the business in Supabase database
+        business = get_business_by_phone(business_phone, call_id=call_id)
         
         if business:
             business_info = BusinessInfo(
                 id=business.get("id"),
                 name=business.get("name", "Our Business"),
                 phone=business.get("phone"),
-                type=business.get("type", "default"),  # Get business type
-                cache_key=generate_business_key(twilio_number)
+                type=business.get("type", "default"),
+                cache_key=generate_business_key(business_phone)
             )
-            logger.info(f"Found business: {business_info.name} (ID: {business_info.id}, Type: {business_info.type})")
+            logger.info(f"Found business in database: {business_info.name} (ID: {business_info.id}, Type: {business_info.type})")
             return business_info
         else:
-            logger.warning(f"No business found for number {twilio_number}")
-            return BusinessInfo(
-                id=None,
-                name="Our Business",
-                phone=twilio_number,
-                type="default",
-                cache_key=generate_business_key(twilio_number)
-            )
+            logger.info(f"No business found in database for phone {business_phone}")
+            return None
             
     except Exception as e:
         logger.error(f"Error in cached business lookup: {str(e)}")
-        return BusinessInfo(
-            id=None,
-            name="Our Business", 
-            phone=twilio_number,
-            type="default",
-            cache_key=generate_business_key(twilio_number)
-        )
+        return None
 
 
-async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str, caller_phone: str) -> None:
-    """Run the voice bot with agent integration."""
+async def get_business_info(business_phone: str, call_id: str) -> tuple[str, str, Optional[str]]:
+    """
+    Get business information using a simple flow:
+    1. Try to get from database via cache
+    2. Fall back to configuration if not in database
+    3. Default to "Our Business" if all else fails
+    
+    Args:
+        business_phone: Phone number of the business
+        call_id: Twilio call SID (for logging)
+        
+    Returns:
+        (business_name, business_type, business_id) tuple
+    """
+    if not business_phone:
+        logger.warning(f"No business phone provided for call {call_id}")
+        return "Our Business", "default", None
+        
+    try:
+        # First try to get from database
+        business_info = await get_business_info_cached(call_id, business_phone)
+        
+        if business_info:
+            # Found in database - use this info
+            return business_info.name, business_info.type, business_info.id
+        
+        # Not in database - try to get name from Twilio config
+        business_name = get_business_name(business_phone)
+        logger.info(f"Using business name from config: {business_name}")
+        
+        # Return with default type
+        return business_name, "default", None
+            
+    except Exception as e:
+        logger.error(f"Error in business lookup: {str(e)}")
+        return "Our Business", "default", None
+
+
+async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str, 
+                 caller_phone: str, business_phone: str) -> None:
+    """
+    Run the voice bot with business-driven Twilio integration.
+    
+    Args:
+        room_url: Daily room URL
+        token: Daily room token
+        call_id: Twilio call SID
+        sip_uri: Daily SIP URI
+        caller_phone: Phone number of the caller
+        business_phone: Phone number of the business that was called
+    """
     start_time = time.time()
     logger.info(f"Starting bot with room: {room_url}")
     logger.info(f"SIP endpoint: {sip_uri}")
     logger.info(f"Caller phone: {caller_phone}")
+    logger.info(f"Business phone: {business_phone}")
     
     # Initialize cache if not already done
     cache = get_cache_instance()
@@ -253,8 +289,8 @@ async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str, caller_
     # Initialize agent system if not already done
     await initialize_agent_system()
     
-    # Get business information with caching (now includes business type)
-    business_name, business_type, business_id = await get_business_info(call_id, caller_phone)
+    # Get business information using simplified flow
+    business_name, business_type, business_id = await get_business_info(business_phone, call_id)
     
     # Get appropriate agent for business type
     business_agent = get_agent_for_business_type(business_type)
@@ -294,7 +330,7 @@ async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str, caller_
     # Setup LLM service
     llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"))
     
-    # Create agent-enhanced context instead of knowledge-enhanced context
+    # Create agent-enhanced context
     if HAS_KNOWLEDGE_BASE and business_id:
         try:
             knowledge_base = KnowledgeBase()
@@ -305,18 +341,16 @@ async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str, caller_
     else:
         knowledge_base = None
     
-    # Create agent-enhanced context (this is the key integration point)
+    # Create context aggregator with agent-enhanced context
     context = create_agent_enhanced_context(
         assistant.context,
         business_agent,
         agent_context,
         knowledge_base
     )
-    
-    # Setup context aggregator with agent-enhanced context
     context_aggregator = llm.create_context_aggregator(context)
     
-    # Build the simple pipeline (no changes to pipeline structure)
+    # Build the pipeline
     pipeline = Pipeline([
         transport.input(),
         context_aggregator.user(),
@@ -336,7 +370,6 @@ async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str, caller_
     
     setup_time = time.time()
     logger.info(f"Bot setup completed after {setup_time - start_time:.2f} seconds")
-    logger.info(f"Using {business_agent.agent_id} for {business_name}")
     
     # Event handlers
     @transport.event_handler("on_first_participant_joined")
@@ -351,7 +384,8 @@ async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str, caller_
     
     @transport.event_handler("on_dialin_ready")
     async def on_dialin_ready(transport, cdata):
-        await assistant.handle_dial_in_ready(call_id, sip_uri)
+        # Pass the business_phone to the handler
+        await assistant.handle_dial_in_ready(call_id, sip_uri, business_phone)
     
     @transport.event_handler("on_dialin_connected")
     async def on_dialin_connected(transport, data):
@@ -384,18 +418,9 @@ async def run_bot(room_url: str, token: str, call_id: str, sip_uri: str, caller_
     except Exception as e:
         logger.error(f"Error running bot pipeline: {str(e)}")
     finally:
-        # Log final statistics including agent stats
+        # Log final statistics
         total_time = time.time() - start_time
         logger.info(f"Bot session completed after {total_time:.2f} seconds")
-        
-        # Log cache statistics if available
-        if cache:
-            stats = cache.get_stats()
-            logger.info("Cache statistics for this session", **stats.get("performance", {}))
-        
-        # Log agent statistics
-        agent_stats = business_agent.get_stats()
-        logger.info("Agent statistics for this session", **agent_stats)
 
 
 async def main():
@@ -406,6 +431,7 @@ async def main():
     parser.add_argument("-i", type=str, required=True, help="Twilio call ID")
     parser.add_argument("-s", type=str, required=True, help="Daily SIP URI")
     parser.add_argument("-p", type=str, default="unknown-caller", help="Caller phone number")
+    parser.add_argument("-b", type=str, default=None, help="Business phone number that was called")
     
     args = parser.parse_args()
     
@@ -415,7 +441,7 @@ async def main():
         parser.print_help()
         sys.exit(1)
     
-    await run_bot(args.u, args.t, args.i, args.s, args.p)
+    await run_bot(args.u, args.t, args.i, args.s, args.p, args.b)
 
 
 if __name__ == "__main__":

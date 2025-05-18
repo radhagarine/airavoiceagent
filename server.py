@@ -1,4 +1,4 @@
-"""Complete server.py implementation with agent integration."""
+"""Updated server.py with simplified business-driven Twilio integration."""
 
 import os
 import shlex
@@ -13,6 +13,9 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, Response
 from twilio.twiml.voice_response import VoiceResponse
 from utils.daily_helpers import create_sip_room
+
+# Import the Twilio handler with simplified interface
+from utils.twilio_handler import get_twilio_manager, get_client_for_phone
 
 # Load environment variables
 load_dotenv()
@@ -50,6 +53,12 @@ async def lifespan(app: FastAPI):
     # Create aiohttp session
     app.state.session = aiohttp.ClientSession()
     logger.info("Server starting up")
+    
+    # Initialize Twilio business manager
+    app.state.twilio_manager = get_twilio_manager()
+    accounts = app.state.twilio_manager.get_all_accounts()
+    phone_count = len(app.state.twilio_manager.get_all_phone_mappings())
+    logger.info(f"Initialized Twilio Business Manager with {len(accounts)} accounts and {phone_count} phone mappings")
 
     # Initialize monitoring
     initialize_monitoring()
@@ -62,7 +71,6 @@ async def lifespan(app: FastAPI):
         logger.info("Cache system initialized successfully")
         
         # Warm cache with common business lookups if available
-        # You can customize this based on your most frequently called numbers
         common_phones = []  # Add your most common business phones here
         if common_phones:
             await warm_business_lookups(common_phones)
@@ -106,7 +114,7 @@ async def lifespan(app: FastAPI):
     await metrics.shutdown()
     logger.info("Server shutdown complete")
 
-app = FastAPI(lifespan=lifespan, title="Voice Bot Webhook Server with Agent Integration", version="1.0.0")
+app = FastAPI(lifespan=lifespan, title="Voice Bot Webhook Server with Business-Driven Twilio Integration", version="1.0.0")
 
 # Add metrics endpoint
 add_metrics_endpoint(app)
@@ -119,7 +127,7 @@ async def handle_call_get(request: Request):
 @monitor_performance("twilio_webhook")
 @app.post("/call", response_class=PlainTextResponse)
 async def handle_call_post(request: Request):
-    """Handle incoming Twilio call webhook with cache and agent integration."""
+    """Handle incoming Twilio call webhook with simplified business-driven Twilio integration."""
     start_time = time.time()
     correlation_id = f"twilio_{int(time.time() * 1000)}"
     
@@ -137,14 +145,14 @@ async def handle_call_post(request: Request):
                 raise HTTPException(status_code=400, detail="Missing CallSid in request")
 
             with log_context(call_id=call_sid):
-                # Extract phone numbers
+                # Extract phone numbers - extract both caller and called numbers
                 caller_phone = str(data.get("From", "unknown-caller"))
-                called_phone = str(data.get("To", "unknown-caller"))
+                called_phone = str(data.get("To", "unknown-called"))
                 
                 logger.info("Processing call", 
                           caller_phone=caller_phone, 
                           called_phone=called_phone)
-
+                
                 # Create Daily room
                 try:
                     room_details = await create_sip_room(request.app.state.session, caller_phone)
@@ -164,8 +172,12 @@ async def handle_call_post(request: Request):
                 if not sip_endpoint:
                     raise HTTPException(status_code=500, detail="No SIP endpoint provided by Daily")
 
-                # Start bot process with cache and agent integration
-                bot_cmd = f"python bot.py -u {room_url} -t {token} -i {call_sid} -s {sip_endpoint} -p {caller_phone}"
+                # Start bot process with business phone parameter
+                # Escape the phone numbers to ensure command line safety
+                escaped_caller = shlex.quote(caller_phone)
+                escaped_called = shlex.quote(called_phone)
+                
+                bot_cmd = f"python bot.py -u {room_url} -t {token} -i {call_sid} -s {sip_endpoint} -p {escaped_caller} -b {escaped_called}"
                 try:
                     cmd_parts = shlex.split(bot_cmd)
                     subprocess.Popen(cmd_parts)
@@ -195,6 +207,24 @@ async def handle_call_post(request: Request):
         except Exception as e:
             logger.error("Unexpected error in webhook", error=str(e))
             raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+
+@app.get("/twilio/accounts")
+async def list_twilio_accounts(request: Request):
+    """List all configured Twilio accounts (masked for security)."""
+    twilio_manager = request.app.state.twilio_manager
+    return {
+        "accounts": twilio_manager.get_all_accounts(),
+        "count": len(twilio_manager.accounts)
+    }
+
+@app.get("/twilio/phone-mappings")
+async def list_phone_mappings(request: Request):
+    """List all phone-to-account mappings (masked for security)."""
+    twilio_manager = request.app.state.twilio_manager
+    return {
+        "mappings": twilio_manager.get_all_phone_mappings(),
+        "count": len(twilio_manager.phone_map)
+    }
 
 @app.get("/health")
 async def health_check():
