@@ -16,3 +16,5 @@ psutil>=5.9.0
 # Cache dependencies - using redis-py async support for Python 3.12 compatibility
 redis[hiredis]>=4.5.0
 cachetools>=5.0.0
+
+requests
