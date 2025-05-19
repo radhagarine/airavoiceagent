@@ -36,7 +36,8 @@ from utils.supabase_helper import get_business_by_phone
 
 # Import cache and agent system (with conditional imports to handle missing components)
 try:
-    from cache import initialize_cache, get_cache_instance, cache_business_lookup, generate_business_key
+    from cache.simplified_cache import initialize_cache, get_cache_instance, cache_business_lookup, generate_business_key
+
     HAS_CACHE = True
 except ImportError:
     logger.warning("Cache system not available")

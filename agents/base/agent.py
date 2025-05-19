@@ -7,7 +7,8 @@ from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 
 from monitoring_system import logger, monitor_performance, metrics, log_context
-from cache import cache_result, generate_knowledge_base_key
+from cache.simplified_cache import cache_result, generate_knowledge_base_key, cache_knowledge_base
+
 
 
 @dataclass

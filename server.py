@@ -34,12 +34,11 @@ from monitoring_system import (
     shutdown_monitoring,
     track_object_creation
 )
-from cache import (
+from cache.simplified_cache import (
     initialize_cache,
     shutdown_cache,
     get_cache_health,
-    get_cache_stats,
-    warm_business_lookups
+    get_cache_stats
 )
 
 # Import agent system
